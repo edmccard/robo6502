@@ -1,0 +1,12 @@
+[package]
+edition = "2018"
+name = "robo6502"
+description = "A cycle-accurate 6502 emulator"
+version = "0.1.0"
+authors = ["Ed McCardell <edmccard@hotmail.com>"]
+homepage = "https://github.com/edmccard/robo6502"
+repository = "https://github.com/edmccard/robo6502"
+license = "MIT/Apache-2.0"
+
+[dependencies]
+machine_int = "0.1.0"
