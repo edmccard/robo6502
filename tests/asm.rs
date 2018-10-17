@@ -8,7 +8,7 @@
 
 use std::io::Read;
 
-use robo6502::Cpu;
+use robo6502::{Cmos, Cpu, Nmos};
 
 use self::common::{MemSys, StepFullSys, StepSys, TestSys, VecSys};
 
@@ -17,8 +17,7 @@ mod common;
 #[test]
 #[ignore]
 fn klaus2m5_functional() {
-    fn run<T: TestSys>(mut sys: T) {
-        let mut cpu = Cpu::standard();
+    fn run<T: TestSys + MemSys, C: Cpu>(mut sys: T, mut cpu: C, name: &str) {
         cpu.set_pc(0x0400);
         let mut prev_pc = cpu.pc();
         // 96241367
@@ -28,7 +27,7 @@ fn klaus2m5_functional() {
                 if cpu.pc() == 0x3469 {
                     break;
                 }
-                panic!("pc loop at {:04x}", cpu.pc());
+                panic!("{}: pc loop at {:04x}", name, cpu.pc());
             } else {
                 prev_pc = cpu.pc();
             }
@@ -41,20 +40,64 @@ fn klaus2m5_functional() {
     let data = load_bin("6502_functional_test.bin", 0);
 
     let sys = VecSys::new(data.clone());
-    run(sys);
+    run(sys, Cmos::new(), "cmos");
+
+    let sys = VecSys::new(data.clone());
+    run(sys, Nmos::standard(), "nmos");
 
     let sys = StepFullSys::new(VecSys::new(data.clone()));
-    run(sys);
+    run(sys, Cmos::new(), "cmos");
+
+    let sys = StepFullSys::new(VecSys::new(data.clone()));
+    run(sys, Nmos::standard(), "nmos");
 
     let sys = StepSys::new(VecSys::new(data.clone()));
-    run(sys);
+    run(sys, Cmos::new(), "cmos");
+
+    let sys = StepSys::new(VecSys::new(data.clone()));
+    run(sys, Nmos::standard(), "nmos");
+}
+
+#[test]
+#[ignore]
+fn klaus2m5_65c02_functional() {
+    fn run<T: TestSys + MemSys, C: Cpu>(mut sys: T, mut cpu: C, name: &str) {
+        cpu.set_pc(0x0400);
+        let mut prev_pc = cpu.pc();
+        // 96241367
+        for _i in 0..31000000 {
+            sys.run_instruction(&mut cpu);
+            if cpu.pc() == prev_pc {
+                if cpu.pc() == 0x2434 {
+                    break;
+                }
+                panic!("{}: pc loop at {:04x}", name, cpu.pc());
+            } else {
+                prev_pc = cpu.pc();
+            }
+        }
+        if cpu.pc() != 0x2434 {
+            panic!("test failed");
+        }
+    }
+
+    let data = load_bin("65C02_extended_opcodes_test.bin", 10);
+
+    let sys = VecSys::new(data.clone());
+    run(sys, Cmos::new(), "cmos");
+
+    let sys = StepFullSys::new(VecSys::new(data.clone()));
+    run(sys, Cmos::new(), "cmos");
+
+    let sys = StepSys::new(VecSys::new(data.clone()));
+    run(sys, Cmos::new(), "cmos");
 }
 
 #[test]
 #[ignore]
 fn clark_decimal() {
     fn run<T: TestSys + MemSys>(mut sys: T) {
-        let mut cpu = Cpu::standard();
+        let mut cpu = Nmos::standard();
         cpu.set_pc(0x0200);
         for _i in 0..18000000 {
             sys.run_instruction(&mut cpu);
@@ -84,13 +127,44 @@ fn clark_decimal() {
 
 #[test]
 #[ignore]
+fn clark_decimal_65c02() {
+    fn run<T: TestSys + MemSys>(mut sys: T) {
+        let mut cpu = Cmos::new();
+        cpu.set_pc(0x0200);
+        for _i in 0..20000000 {
+            sys.run_instruction(&mut cpu);
+            if cpu.pc() == 0x024b {
+                break;
+            }
+        }
+        if cpu.pc() != 0x024b {
+            panic!("test failed -- end pc at {:04x}", cpu.pc());
+        }
+        if sys.mem()[0x000b] != 0 {
+            panic!("test failed");
+        }
+    }
+
+    let data = load_bin("clark_decimal_test_65c02.bin", 0x0200);
+
+    let sys = VecSys::new(data.clone());
+    run(sys);
+
+    let sys = StepFullSys::new(VecSys::new(data.clone()));
+    run(sys);
+
+    let sys = StepSys::new(VecSys::new(data.clone()));
+    run(sys);
+}
+
+#[test]
+#[ignore]
 fn kevtris_nestest() {
     fn run<T: TestSys + MemSys>(mut sys: T) {
-        let mut cpu = Cpu::nes();
+        let mut cpu = Nmos::nes();
         cpu.reset();
         sys.run_instruction(&mut cpu);
         cpu.set_pc(0xc000);
-        // 8970 8980
         for _i in 0..8990 {
             sys.run_instruction(&mut cpu);
         }

@@ -1,9 +1,10 @@
 #![feature(duration_as_u128)]
 
 use std::io::Read;
+use std::iter;
 use std::time::{Duration, Instant};
 
-use robo6502::{Cpu, Sys};
+use robo6502::{Cmos, Cpu, Nmos, Sys};
 
 fn main() {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -13,9 +14,20 @@ fn main() {
 
     let mut mem = Vec::new();
     file.read_to_end(&mut mem).unwrap();
+
+    let nmos = iter::repeat_with(|| run_program(mem.clone(), Nmos::standard()))
+        .take(3)
+        .fold(0.0/0.0, f64::max);
+    println!("NMOS MHz: {}", nmos);
+    let cmos = iter::repeat_with(|| run_program(mem.clone(), Cmos::new()))
+        .take(3)
+        .fold(0.0/0.0, f64::max);
+    println!("CMOS MHz: {}", cmos);
+}
+
+fn run_program<C: Cpu>(mem: Vec<u8>, mut cpu: C) -> f64 {
     let mut sys = VecSys { mem };
 
-    let mut cpu = Cpu::standard();
     cpu.set_pc(0x0400);
 
     let now = Instant::now();
@@ -26,7 +38,12 @@ fn main() {
         }
     }
     let now = now.elapsed();
-    println!("MHz: {}", 96241364.0 / (total_time(now) * 1000000.0));
+    let cycles = if cpu.is_nmos() {
+        96241364.0
+    } else {
+        96561319.0
+    };
+    cycles / (total_time(now) * 1000000.0)
 }
 
 fn total_time(d: Duration) -> f64 {

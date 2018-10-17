@@ -10,7 +10,7 @@ use super::*;
 
 #[test]
 fn reset() {
-    let mut cpu = Cpu::standard();
+    let mut cpu = Nmos::standard();
     cpu.reset();
     let mut sys = NullSys::new(0x2000, 0x4000, 0x6000);
     cpu.run_instruction(&mut sys);

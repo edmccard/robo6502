@@ -6,14 +6,15 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use crate::{Cpu, NmiLength, Sys};
+use machine_int::MachineInt;
 
-use super::{Addr, AddrExt, AddrMath};
+use crate::mi::{Addr, AddrExt, AddrMath};
+use crate::{Cmos, Sys};
 
 mod step;
 
 #[allow(non_snake_case)]
-impl Cpu {
+impl Cmos {
     // BRK
     fn op_00<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         // PC is incremented for BRK but not NMI/IRQ
@@ -38,13 +39,7 @@ impl Cpu {
         }
         self.sp -= 1;
 
-        // This is the last cycle where NMI can affect the vector.
         self.base1 = self.signal_vector(sys);
-
-        // TODO say why needed
-        if !self.nmi_edge && sys.peek_nmi() {
-            sys.poll_nmi();
-        }
 
         if self.reset {
             self.read_stack(sys)?;
@@ -56,26 +51,12 @@ impl Cpu {
         }
         self.sp -= 1;
 
-        // TODO: say why needed
-        if !self.nmi_edge
-            && sys.peek_nmi()
-            && sys.nmi_length() < NmiLength::Plenty
-        {
-            sys.poll_nmi();
-        }
-
         self.lo_byte = self.read(sys, self.base1)?;
-
-        // TODO: say why needed
-        if !self.nmi_edge && sys.peek_nmi() && sys.nmi_length() < NmiLength::Two
-        {
-            sys.poll_nmi();
-        }
-
-        let hi_byte = self.read(sys, self.base1 + 1)?;
-        self.pc = Addr::from_bytes(self.lo_byte, hi_byte);
+        self.hi_byte = self.read(sys, self.base1 + 1)?;
+        self.pc = Addr::from_bytes(self.lo_byte, self.hi_byte);
 
         self.flags.i = true;
+        self.flags.d = false;
         self.clear_signals();
 
         Some(())
@@ -89,24 +70,22 @@ impl Cpu {
         Some(())
     }
 
-    // KIL
-    fn op_02<S: Sys>(&mut self, _sys: &mut S) -> Option<()> {
-        self.halt()
-    }
-
-    // SLO ($nn,X)
-    fn op_03<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
-        self.base1 = self.addr_izx(sys)?;
-        self.rmw(sys, self.base1, Cpu::ASL)?;
-        self.ORA(self.lo_byte);
+    // NOP #nn
+    fn op_02<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+        self.immediate(sys)?;
         Some(())
     }
 
-    // *NOP $nn
+    // NOP (single-cycle)
+    fn op_03<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+        self.poll_prev_signals(sys);
+        Some(())
+    }
+
+    // TSB $nn
     fn op_04<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_zp(sys)?;
-        self.load(sys, self.base1)?;
-        Some(())
+        self.rmw(sys, self.base1, Cmos::TSB)
     }
 
     // ORA $nn
@@ -120,14 +99,12 @@ impl Cpu {
     // ASL $nn
     fn op_06<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_zp(sys)?;
-        self.rmw(sys, self.base1, Cpu::ASL)
+        self.rmw(sys, self.base1, Cmos::ASL)
     }
 
-    // SLO $nn
+    // NOP (single-cycle)
     fn op_07<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
-        self.base1 = self.addr_zp(sys)?;
-        self.rmw(sys, self.base1, Cpu::ASL)?;
-        self.ORA(self.lo_byte);
+        self.poll_prev_signals(sys);
         Some(())
     }
 
@@ -153,19 +130,16 @@ impl Cpu {
         Some(())
     }
 
-    // ANC #nn
+    // NOP (single-cycle)
     fn op_0B<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
-        let val = self.immediate(sys)?;
-        self.AND(val);
-        self.flags.set_c(self.flags.n());
+        self.poll_prev_signals(sys);
         Some(())
     }
 
-    // NOP* $nnnn
+    // TSB $nnnn
     fn op_0C<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_abs(sys)?;
-        self.load(sys, self.base1)?;
-        Some(())
+        self.rmw(sys, self.base1, Cmos::TSB)
     }
 
     // ORA $nnnn
@@ -179,14 +153,12 @@ impl Cpu {
     // ASL $nnnn
     fn op_0E<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_abs(sys)?;
-        self.rmw(sys, self.base1, Cpu::ASL)
+        self.rmw(sys, self.base1, Cmos::ASL)
     }
 
-    // SLO $nnnn
+    // NOP (single-cycle)
     fn op_0F<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
-        self.base1 = self.addr_abs(sys)?;
-        self.rmw(sys, self.base1, Cpu::ASL)?;
-        self.ORA(self.lo_byte);
+        self.poll_prev_signals(sys);
         Some(())
     }
 
@@ -203,24 +175,24 @@ impl Cpu {
         Some(())
     }
 
-    // KIL
-    fn op_12<S: Sys>(&mut self, _sys: &mut S) -> Option<()> {
-        self.halt()
+    // ORA ($nn)
+    fn op_12<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+        self.base1 = self.addr_izp(sys)?;
+        let val = self.load(sys, self.base1)?;
+        self.ORA(val);
+        Some(())
     }
 
-    // SLO ($nn),Y
+    // NOP (single-cycle)
     fn op_13<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
-        self.base1 = self.addr_izy(sys, true)?;
-        self.rmw(sys, self.base1, Cpu::ASL)?;
-        self.ORA(self.lo_byte);
+        self.poll_prev_signals(sys);
         Some(())
     }
 
-    // NOP* $nn,X
+    // TRB $nn
     fn op_14<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
-        self.base1 = self.addr_zpi(sys, self.x)?;
-        self.load(sys, self.base1)?;
-        Some(())
+        self.base1 = self.addr_zp(sys)?;
+        self.rmw(sys, self.base1, Cmos::TRB)
     }
 
     // ORA $nn,X
@@ -234,14 +206,12 @@ impl Cpu {
     // ASL $nn,X
     fn op_16<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_zpi(sys, self.x)?;
-        self.rmw(sys, self.base1, Cpu::ASL)
+        self.rmw(sys, self.base1, Cmos::ASL)
     }
 
-    // SLO $nn,X
+    // NOP (single-cycle)
     fn op_17<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
-        self.base1 = self.addr_zpi(sys, self.x)?;
-        self.rmw(sys, self.base1, Cpu::ASL)?;
-        self.ORA(self.lo_byte);
+        self.poll_prev_signals(sys);
         Some(())
     }
 
@@ -260,24 +230,23 @@ impl Cpu {
         Some(())
     }
 
-    // NOP*
+    // INC A
     fn op_1A<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
-        self.implicit(sys)
+        self.implicit(sys)?;
+        self.a = self.INC(self.a);
+        Some(())
     }
 
-    // SLO $nnnn,Y
+    // NOP (single-cycle)
     fn op_1B<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
-        self.base1 = self.addr_abi(sys, self.y, true)?;
-        self.rmw(sys, self.base1, Cpu::ASL)?;
-        self.ORA(self.lo_byte);
+        self.poll_prev_signals(sys);
         Some(())
     }
 
-    // NOP* $nnnn,X
+    // TRB $nnnn
     fn op_1C<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
-        self.base1 = self.addr_abi(sys, self.x, false)?;
-        self.load(sys, self.base1)?;
-        Some(())
+        self.base1 = self.addr_abs(sys)?;
+        self.rmw(sys, self.base1, Cmos::TRB)
     }
 
     // ORA $nnnn,X
@@ -290,15 +259,14 @@ impl Cpu {
 
     // ASL $nnnn,X
     fn op_1E<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
-        self.base1 = self.addr_abi(sys, self.x, true)?;
-        self.rmw(sys, self.base1, Cpu::ASL)
+        // One cycle less if no px
+        self.base1 = self.addr_abi(sys, self.x, false)?;
+        self.rmw(sys, self.base1, Cmos::ASL)
     }
 
-    // SLO $nnnn,X
+    // NOP (single-cycle)
     fn op_1F<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
-        self.base1 = self.addr_abi(sys, self.x, true)?;
-        self.rmw(sys, self.base1, Cpu::ASL)?;
-        self.ORA(self.lo_byte);
+        self.poll_prev_signals(sys);
         Some(())
     }
 
@@ -311,8 +279,8 @@ impl Cpu {
         self.write_stack(sys, self.pc.lo())?;
         self.sp -= 1;
         self.poll_signals(sys);
-        let hi_byte = self.fetch_operand(sys)?;
-        self.pc = Addr::from_bytes(self.lo_byte, hi_byte);
+        self.hi_byte = self.fetch_operand(sys)?;
+        self.pc = Addr::from_bytes(self.lo_byte, self.hi_byte);
         Some(())
     }
 
@@ -324,16 +292,15 @@ impl Cpu {
         Some(())
     }
 
-    // KIL
-    fn op_22<S: Sys>(&mut self, _sys: &mut S) -> Option<()> {
-        self.halt()
+    // NOP #nn
+    fn op_22<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+        self.immediate(sys)?;
+        Some(())
     }
 
-    // RLA ($nn,X)
+    // NOP (single-cycle)
     fn op_23<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
-        self.base1 = self.addr_izx(sys)?;
-        self.rmw(sys, self.base1, Cpu::ROL)?;
-        self.AND(self.lo_byte);
+        self.poll_prev_signals(sys);
         Some(())
     }
 
@@ -356,14 +323,12 @@ impl Cpu {
     // ROL $nn
     fn op_26<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_zp(sys)?;
-        self.rmw(sys, self.base1, Cpu::ROL)
+        self.rmw(sys, self.base1, Cmos::ROL)
     }
 
-    // RLA $nn
+    // NOP (single-cycle)
     fn op_27<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
-        self.base1 = self.addr_zp(sys)?;
-        self.rmw(sys, self.base1, Cpu::ROL)?;
-        self.AND(self.lo_byte);
+        self.poll_prev_signals(sys);
         Some(())
     }
 
@@ -391,11 +356,9 @@ impl Cpu {
         Some(())
     }
 
-    // ANC #nn
+    // NOP (single-cycle)
     fn op_2B<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
-        let val = self.immediate(sys)?;
-        self.AND(val);
-        self.flags.set_c(self.flags.n());
+        self.poll_prev_signals(sys);
         Some(())
     }
 
@@ -418,14 +381,12 @@ impl Cpu {
     // ROL $nnnn
     fn op_2E<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_abs(sys)?;
-        self.rmw(sys, self.base1, Cpu::ROL)
+        self.rmw(sys, self.base1, Cmos::ROL)
     }
 
-    // RLA $nnnn
+    // NOP (single-cycle)
     fn op_2F<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
-        self.base1 = self.addr_abs(sys)?;
-        self.rmw(sys, self.base1, Cpu::ROL)?;
-        self.AND(self.lo_byte);
+        self.poll_prev_signals(sys);
         Some(())
     }
 
@@ -442,23 +403,25 @@ impl Cpu {
         Some(())
     }
 
-    // KIL
-    fn op_32<S: Sys>(&mut self, _sys: &mut S) -> Option<()> {
-        self.halt()
-    }
-
-    // RLA ($nn),Y
-    fn op_33<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
-        self.base1 = self.addr_izy(sys, true)?;
-        self.rmw(sys, self.base1, Cpu::ROL)?;
-        self.AND(self.lo_byte);
+    // AND ($nn)
+    fn op_32<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+        self.base1 = self.addr_izp(sys)?;
+        let val = self.load(sys, self.base1)?;
+        self.AND(val);
         Some(())
     }
 
-    // NOP* $nn,X
+    // NOP (single-cycle)
+    fn op_33<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+        self.poll_prev_signals(sys);
+        Some(())
+    }
+
+    // BIT $nn,X
     fn op_34<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_zpi(sys, self.x)?;
-        self.load(sys, self.base1)?;
+        let val = self.load(sys, self.base1)?;
+        self.BIT(val);
         Some(())
     }
 
@@ -473,14 +436,12 @@ impl Cpu {
     // ROL $nn,X
     fn op_36<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_zpi(sys, self.x)?;
-        self.rmw(sys, self.base1, Cpu::ROL)
+        self.rmw(sys, self.base1, Cmos::ROL)
     }
 
-    // RLA $nn,X
+    // NOP (single-cycle)
     fn op_37<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
-        self.base1 = self.addr_zpi(sys, self.x)?;
-        self.rmw(sys, self.base1, Cpu::ROL)?;
-        self.AND(self.lo_byte);
+        self.poll_prev_signals(sys);
         Some(())
     }
 
@@ -499,23 +460,24 @@ impl Cpu {
         Some(())
     }
 
-    // NOP*
+    // DEC A
     fn op_3A<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
-        self.implicit(sys)
-    }
-
-    // RLA $nnnn,Y
-    fn op_3B<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
-        self.base1 = self.addr_abi(sys, self.y, true)?;
-        self.rmw(sys, self.base1, Cpu::ROL)?;
-        self.AND(self.lo_byte);
+        self.implicit(sys)?;
+        self.a = self.DEC(self.a);
         Some(())
     }
 
-    // NOP* $nnnn,X
+    // NOP (single-cycle)
+    fn op_3B<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+        self.poll_prev_signals(sys);
+        Some(())
+    }
+
+    // BIT $nnnn,X
     fn op_3C<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_abi(sys, self.x, false)?;
-        self.load(sys, self.base1)?;
+        let val = self.load(sys, self.base1)?;
+        self.BIT(val);
         Some(())
     }
 
@@ -529,15 +491,14 @@ impl Cpu {
 
     // ROL $nnnn,X
     fn op_3E<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
-        self.base1 = self.addr_abi(sys, self.x, true)?;
-        self.rmw(sys, self.base1, Cpu::ROL)
+        // One cycle less if no px
+        self.base1 = self.addr_abi(sys, self.x, false)?;
+        self.rmw(sys, self.base1, Cmos::ROL)
     }
 
-    // RLA $nnnn,X
+    // NOP (single-cycle)
     fn op_3F<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
-        self.base1 = self.addr_abi(sys, self.x, true)?;
-        self.rmw(sys, self.base1, Cpu::ROL)?;
-        self.AND(self.lo_byte);
+        self.poll_prev_signals(sys);
         Some(())
     }
 
@@ -552,8 +513,8 @@ impl Cpu {
         self.lo_byte = self.read_stack(sys)?;
         self.sp += 1;
         self.poll_signals(sys);
-        let hi_byte = self.read_stack(sys)?;
-        self.pc = Addr::from_bytes(self.lo_byte, hi_byte);
+        self.hi_byte = self.read_stack(sys)?;
+        self.pc = Addr::from_bytes(self.lo_byte, self.hi_byte);
         Some(())
     }
 
@@ -565,20 +526,19 @@ impl Cpu {
         Some(())
     }
 
-    // KIL
-    fn op_42<S: Sys>(&mut self, _sys: &mut S) -> Option<()> {
-        self.halt()
-    }
-
-    // SRE ($nn,X)
-    fn op_43<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
-        self.base1 = self.addr_izx(sys)?;
-        self.rmw(sys, self.base1, Cpu::LSR)?;
-        self.EOR(self.lo_byte);
+    // NOP #nn
+    fn op_42<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+        self.immediate(sys)?;
         Some(())
     }
 
-    // NOP* $nn
+    // NOP (single-cycle)
+    fn op_43<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+        self.poll_prev_signals(sys);
+        Some(())
+    }
+
+    // NOP $nn
     fn op_44<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_zp(sys)?;
         self.load(sys, self.base1)?;
@@ -596,14 +556,12 @@ impl Cpu {
     // LSR $nn
     fn op_46<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_zp(sys)?;
-        self.rmw(sys, self.base1, Cpu::LSR)
+        self.rmw(sys, self.base1, Cmos::LSR)
     }
 
-    // SRE $nn
+    // NOP (single-cycle)
     fn op_47<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
-        self.base1 = self.addr_zp(sys)?;
-        self.rmw(sys, self.base1, Cpu::LSR)?;
-        self.EOR(self.lo_byte);
+        self.poll_prev_signals(sys);
         Some(())
     }
 
@@ -629,11 +587,9 @@ impl Cpu {
         Some(())
     }
 
-    // ALR #nn
+    // NOP (single-cycle)
     fn op_4B<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
-        let val = self.immediate(sys)?;
-        self.AND(val);
-        self.a = self.LSR(self.a);
+        self.poll_prev_signals(sys);
         Some(())
     }
 
@@ -641,8 +597,8 @@ impl Cpu {
     fn op_4C<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.lo_byte = self.fetch_operand(sys)?;
         self.poll_signals(sys);
-        let hi_byte = self.fetch_operand(sys)?;
-        self.pc = Addr::from_bytes(self.lo_byte, hi_byte);
+        self.hi_byte = self.fetch_operand(sys)?;
+        self.pc = Addr::from_bytes(self.lo_byte, self.hi_byte);
         Some(())
     }
 
@@ -657,14 +613,12 @@ impl Cpu {
     // LSR $nnnn
     fn op_4E<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_abs(sys)?;
-        self.rmw(sys, self.base1, Cpu::LSR)
+        self.rmw(sys, self.base1, Cmos::LSR)
     }
 
-    // SRE $nnnn
+    // NOP (single-cycle)
     fn op_4F<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
-        self.base1 = self.addr_abs(sys)?;
-        self.rmw(sys, self.base1, Cpu::LSR)?;
-        self.EOR(self.lo_byte);
+        self.poll_prev_signals(sys);
         Some(())
     }
 
@@ -681,20 +635,21 @@ impl Cpu {
         Some(())
     }
 
-    // KIL
-    fn op_52<S: Sys>(&mut self, _sys: &mut S) -> Option<()> {
-        self.halt()
-    }
-
-    // SRE ($nn),Y
-    fn op_53<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
-        self.base1 = self.addr_izy(sys, true)?;
-        self.rmw(sys, self.base1, Cpu::LSR)?;
-        self.EOR(self.lo_byte);
+    // EOR ($nn)
+    fn op_52<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+        self.base1 = self.addr_izp(sys)?;
+        let val = self.load(sys, self.base1)?;
+        self.EOR(val);
         Some(())
     }
 
-    // NOP* $nn,X
+    // NOP (single-cycle)
+    fn op_53<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+        self.poll_prev_signals(sys);
+        Some(())
+    }
+
+    // NOP $nn,X
     fn op_54<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_zpi(sys, self.x)?;
         self.load(sys, self.base1)?;
@@ -712,14 +667,12 @@ impl Cpu {
     // LSR $nn,X
     fn op_56<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_zpi(sys, self.x)?;
-        self.rmw(sys, self.base1, Cpu::LSR)
+        self.rmw(sys, self.base1, Cmos::LSR)
     }
 
-    // SRE $nn,X
+    // NOP (single-cycle)
     fn op_57<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
-        self.base1 = self.addr_zpi(sys, self.x)?;
-        self.rmw(sys, self.base1, Cpu::LSR)?;
-        self.EOR(self.lo_byte);
+        self.poll_prev_signals(sys);
         Some(())
     }
 
@@ -738,23 +691,29 @@ impl Cpu {
         Some(())
     }
 
-    // NOP*
+    // PHY
     fn op_5A<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
-        self.implicit(sys)
-    }
-
-    // SRE $nnnn,Y
-    fn op_5B<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
-        self.base1 = self.addr_abi(sys, self.y, true)?;
-        self.rmw(sys, self.base1, Cpu::LSR)?;
-        self.EOR(self.lo_byte);
+        self.read(sys, self.pc)?;
+        self.store(sys, Addr::stack(self.sp), self.y)?;
+        self.sp -= 1;
         Some(())
     }
 
-    // NOP* $nnnn,X
+    // NOP (single-cycle)
+    fn op_5B<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+        self.poll_prev_signals(sys);
+        Some(())
+    }
+
+    // NOP (eight-cycle)
     fn op_5C<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
-        self.base1 = self.addr_abi(sys, self.x, false)?;
-        self.load(sys, self.base1)?;
+        self.base1 =
+            Addr::from_bytes(self.addr_abs(sys)?.lo(), MachineInt(0xff));
+        self.read(sys, self.base1)?;
+        self.read(sys, MachineInt(0xffff))?;
+        self.read(sys, MachineInt(0xffff))?;
+        self.read(sys, MachineInt(0xffff))?;
+        self.load(sys, MachineInt(0xffff))?;
         Some(())
     }
 
@@ -768,15 +727,14 @@ impl Cpu {
 
     // LSR $nnnn,X
     fn op_5E<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
-        self.base1 = self.addr_abi(sys, self.x, true)?;
-        self.rmw(sys, self.base1, Cpu::LSR)
+        // One cycle less if no px
+        self.base1 = self.addr_abi(sys, self.x, false)?;
+        self.rmw(sys, self.base1, Cmos::LSR)
     }
 
-    // SRE $nnnn,X
+    // NOP (single-cycle)
     fn op_5F<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
-        self.base1 = self.addr_abi(sys, self.x, true)?;
-        self.rmw(sys, self.base1, Cpu::LSR)?;
-        self.EOR(self.lo_byte);
+        self.poll_prev_signals(sys);
         Some(())
     }
 
@@ -787,8 +745,8 @@ impl Cpu {
         self.sp += 1;
         self.lo_byte = self.read_stack(sys)?;
         self.sp += 1;
-        let hi_byte = self.read_stack(sys)?;
-        self.pc = Addr::from_bytes(self.lo_byte, hi_byte);
+        self.hi_byte = self.read_stack(sys)?;
+        self.pc = Addr::from_bytes(self.lo_byte, self.hi_byte);
         self.poll_signals(sys);
         self.fetch_operand(sys)?;
         Some(())
@@ -797,57 +755,48 @@ impl Cpu {
     // ADC ($nn,X)
     fn op_61<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_izx(sys)?;
-        let val = self.load(sys, self.base1)?;
-        self.ADC(val);
+        self.decimal(sys, self.base1, Cmos::ADC)
+    }
+
+    // NOP #nn
+    fn op_62<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+        self.immediate(sys)?;
         Some(())
     }
 
-    // KIL
-    fn op_62<S: Sys>(&mut self, _sys: &mut S) -> Option<()> {
-        self.halt()
-    }
-
-    // RRA ($nn,X)
+    // NOP (single-cycle)
     fn op_63<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
-        self.base1 = self.addr_izx(sys)?;
-        self.rmw(sys, self.base1, Cpu::ROR)?;
-        self.ADC(self.lo_byte);
+        self.poll_prev_signals(sys);
         Some(())
     }
 
-    // NOP* $nn
+    // STZ $nn
     fn op_64<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_zp(sys)?;
-        self.load(sys, self.base1)?;
+        self.store(sys, self.base1, MachineInt(0))?;
         Some(())
     }
 
     // ADC $nn
     fn op_65<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_zp(sys)?;
-        let val = self.load(sys, self.base1)?;
-        self.ADC(val);
-        Some(())
+        self.decimal(sys, self.base1, Cmos::ADC)
     }
 
     // ROR $nn
     fn op_66<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_zp(sys)?;
-        self.rmw(sys, self.base1, Cpu::ROR)
+        self.rmw(sys, self.base1, Cmos::ROR)
     }
 
-    // RRA $nn
+    // NOP (single-cycle)
     fn op_67<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
-        self.base1 = self.addr_zp(sys)?;
-        self.rmw(sys, self.base1, Cpu::ROR)?;
-        self.ADC(self.lo_byte);
+        self.poll_prev_signals(sys);
         Some(())
     }
 
     // PLA
     fn op_68<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
-        // on real 6502 if rdy low during dummy read, sp is advanced
-        // (and placed on the address bus)
         self.read(sys, self.pc)?;
         self.read_stack(sys)?;
         self.sp += 1;
@@ -858,8 +807,14 @@ impl Cpu {
 
     // ADC #nn
     fn op_69<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
-        let val = self.immediate(sys)?;
-        self.ADC(val);
+        if !self.flags.d {
+            self.poll_signals(sys);
+        }
+        self.lo_byte = self.fetch_operand(sys)?;
+        if self.flags.d {
+            self.load(sys, self.pc)?;
+        }
+        self.ADC(self.lo_byte);
         Some(())
     }
 
@@ -870,10 +825,9 @@ impl Cpu {
         Some(())
     }
 
-    // ARR #nn
+    // NOP (single-cycle)
     fn op_6B<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
-        let val = self.immediate(sys)?;
-        self.ARR(val);
+        self.poll_prev_signals(sys);
         Some(())
     }
 
@@ -881,31 +835,27 @@ impl Cpu {
     fn op_6C<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_abs(sys)?;
         self.lo_byte = self.read(sys, self.base1)?;
-        // The vector does not cross a page.
-        let hi_byte = self.load(sys, self.base1.no_carry(1))?;
-        self.pc = Addr::from_bytes(self.lo_byte, hi_byte);
+        // CMOS: the vector can cross a page.
+        self.hi_byte = self.load(sys, self.base1 + 1)?;
+        self.pc = Addr::from_bytes(self.lo_byte, self.hi_byte);
         Some(())
     }
 
     // ADC $nnnn
     fn op_6D<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_abs(sys)?;
-        let val = self.load(sys, self.base1)?;
-        self.ADC(val);
-        Some(())
+        self.decimal(sys, self.base1, Cmos::ADC)
     }
 
     // ROR $nnnn
     fn op_6E<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_abs(sys)?;
-        self.rmw(sys, self.base1, Cpu::ROR)
+        self.rmw(sys, self.base1, Cmos::ROR)
     }
 
-    // RRA $nnnn
+    // NOP (single-cycle)
     fn op_6F<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
-        self.base1 = self.addr_abs(sys)?;
-        self.rmw(sys, self.base1, Cpu::ROR)?;
-        self.ADC(self.lo_byte);
+        self.poll_prev_signals(sys);
         Some(())
     }
 
@@ -917,50 +867,43 @@ impl Cpu {
     // ADC ($nn),Y
     fn op_71<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_izy(sys, false)?;
-        let val = self.load(sys, self.base1)?;
-        self.ADC(val);
-        Some(())
+        self.decimal(sys, self.base1, Cmos::ADC)
     }
 
-    // KIL
-    fn op_72<S: Sys>(&mut self, _sys: &mut S) -> Option<()> {
-        self.halt()
+    // ADC ($nn)
+    fn op_72<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+        self.base1 = self.addr_izp(sys)?;
+        self.decimal(sys, self.base1, Cmos::ADC)
     }
 
-    // RRA ($nn),Y
+    // NOP (single-cycle)
     fn op_73<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
-        self.base1 = self.addr_izy(sys, true)?;
-        self.rmw(sys, self.base1, Cpu::ROR)?;
-        self.ADC(self.lo_byte);
+        self.poll_prev_signals(sys);
         Some(())
     }
 
-    // NOP* $nn,X
+    // STZ $nn,X
     fn op_74<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_zpi(sys, self.x)?;
-        self.load(sys, self.base1)?;
+        self.store(sys, self.base1, MachineInt(0))?;
         Some(())
     }
 
     // ADC $nn,X
     fn op_75<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_zpi(sys, self.x)?;
-        let val = self.load(sys, self.base1)?;
-        self.ADC(val);
-        Some(())
+        self.decimal(sys, self.base1, Cmos::ADC)
     }
 
     // ROR $nn,X
     fn op_76<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_zpi(sys, self.x)?;
-        self.rmw(sys, self.base1, Cpu::ROR)
+        self.rmw(sys, self.base1, Cmos::ROR)
     }
 
-    // RRA $nn,X
+    // NOP (single-cycle)
     fn op_77<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
-        self.base1 = self.addr_zpi(sys, self.x)?;
-        self.rmw(sys, self.base1, Cpu::ROR)?;
-        self.ADC(self.lo_byte);
+        self.poll_prev_signals(sys);
         Some(())
     }
 
@@ -974,57 +917,58 @@ impl Cpu {
     // ADC $nnnn,Y
     fn op_79<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_abi(sys, self.y, false)?;
-        let val = self.load(sys, self.base1)?;
-        self.ADC(val);
-        Some(())
+        self.decimal(sys, self.base1, Cmos::ADC)
     }
 
-    // NOP*
+    // PLY
     fn op_7A<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
-        self.implicit(sys)
-    }
-
-    // RRA $nnnn,Y
-    fn op_7B<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
-        self.base1 = self.addr_abi(sys, self.y, true)?;
-        self.rmw(sys, self.base1, Cpu::ROR)?;
-        self.ADC(self.lo_byte);
+        self.read(sys, self.pc)?;
+        self.read_stack(sys)?;
+        self.sp += 1;
+        self.y = self.load(sys, Addr::stack(self.sp))?;
+        self.flags.nz(self.y);
         Some(())
     }
 
-    // NOP* $nnnn,X
+    // NOP (single-cycle)
+    fn op_7B<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+        self.poll_prev_signals(sys);
+        Some(())
+    }
+
+    // JMP ($nnnn,X)
     fn op_7C<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
-        self.base1 = self.addr_abi(sys, self.x, false)?;
-        self.load(sys, self.base1)?;
+        self.lo_byte = self.fetch_operand(sys)?;
+        self.hi_byte = self.read(sys, self.pc)?;
+        self.base1 = self.addr() + self.x;
+        self.fetch_operand(sys)?;
+        self.lo_byte = self.read(sys, self.base1)?;
+        self.hi_byte = self.load(sys, self.base1 + 1)?;
+        self.pc = Addr::from_bytes(self.lo_byte, self.hi_byte);
         Some(())
     }
 
     // ADC $nnnn,X
     fn op_7D<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_abi(sys, self.x, false)?;
-        let val = self.load(sys, self.base1)?;
-        self.ADC(val);
-        Some(())
+        self.decimal(sys, self.base1, Cmos::ADC)
     }
 
     // ROR $nnnn,X
     fn op_7E<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
-        self.base1 = self.addr_abi(sys, self.x, true)?;
-        self.rmw(sys, self.base1, Cpu::ROR)
+        self.base1 = self.addr_abi(sys, self.x, false)?;
+        self.rmw(sys, self.base1, Cmos::ROR)
     }
 
-    // RRA $nnnn,X
+    // NOP (single-cycle)
     fn op_7F<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
-        self.base1 = self.addr_abi(sys, self.x, true)?;
-        self.rmw(sys, self.base1, Cpu::ROR)?;
-        self.ADC(self.lo_byte);
+        self.poll_prev_signals(sys);
         Some(())
     }
 
-    // NOP* #nn
+    // BRA
     fn op_80<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
-        self.immediate(sys)?;
-        Some(())
+        self.branch(sys, true)
     }
 
     // STA ($nn,X)
@@ -1033,16 +977,16 @@ impl Cpu {
         self.store(sys, self.base1, self.a)
     }
 
-    // NOP* #nn
+    // NOP #nn
     fn op_82<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.immediate(sys)?;
         Some(())
     }
 
-    // SAX ($nn,X)
+    // NOP (single-cycle)
     fn op_83<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
-        self.base1 = self.addr_izx(sys)?;
-        self.store(sys, self.base1, self.a & self.x)
+        self.poll_prev_signals(sys);
+        Some(())
     }
 
     // STY $nn
@@ -1063,10 +1007,10 @@ impl Cpu {
         self.store(sys, self.base1, self.x)
     }
 
-    // SAX $nn
+    // NOP (single-cycle)
     fn op_87<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
-        self.base1 = self.addr_zp(sys)?;
-        self.store(sys, self.base1, self.a & self.x)
+        self.poll_prev_signals(sys);
+        Some(())
     }
 
     // DEY
@@ -1077,9 +1021,10 @@ impl Cpu {
         Some(())
     }
 
-    // NOP* #nn
+    // BIT #nn
     fn op_89<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
-        self.immediate(sys)?;
+        let val = self.immediate(sys)?;
+        self.flags.z = self.a & val;
         Some(())
     }
 
@@ -1091,13 +1036,9 @@ impl Cpu {
         Some(())
     }
 
-    // XAA #nn
+    // NOP (single-cycle)
     fn op_8B<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
-        // Unstable: A = (A | magic) & X & #nn
-        // This implementation uses magic = 0xff.
-        let val = self.immediate(sys)?;
-        self.a = (self.a | 0xff) & self.x & val;
-        self.flags.nz(self.a);
+        self.poll_prev_signals(sys);
         Some(())
     }
 
@@ -1119,10 +1060,10 @@ impl Cpu {
         self.store(sys, self.base1, self.x)
     }
 
-    // SAX $nnnn
+    // NOP (single-cycle)
     fn op_8F<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
-        self.base1 = self.addr_abs(sys)?;
-        self.store(sys, self.base1, self.a & self.x)
+        self.poll_prev_signals(sys);
+        Some(())
     }
 
     // BCC
@@ -1136,25 +1077,16 @@ impl Cpu {
         self.store(sys, self.base1, self.a)
     }
 
-    // KIL
-    fn op_92<S: Sys>(&mut self, _sys: &mut S) -> Option<()> {
-        self.halt()
+    // STA ($nn)
+    fn op_92<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+        self.base1 = self.addr_izp(sys)?;
+        self.store(sys, self.base1, self.a)
     }
 
-    // AHX ($nn),Y
+    // NOP (single-cycle)
     fn op_93<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
-        self.base1 = self.addr_zp(sys)?;
-        self.base1 = self.fetch_vector_zp(sys, self.base1)?;
-        // TODO: match and check if sys.rdy to remove &{H+1}
-        self.read(sys, self.base1.no_carry(self.y))?;
-        self.lo_byte = self.a & self.x & (self.base1.hi() + 1);
-        if self.base1.check_carry(self.y) {
-            self.base1 =
-                Addr::from_bytes((self.base1 + self.y).lo(), self.lo_byte);
-        } else {
-            self.base1 += self.y
-        }
-        self.store(sys, self.base1, self.lo_byte)
+        self.poll_prev_signals(sys);
+        Some(())
     }
 
     // STY $nn,X
@@ -1175,10 +1107,10 @@ impl Cpu {
         self.store(sys, self.base1, self.x)
     }
 
-    // SAX $nn,Y
+    // NOP (single-cycle)
     fn op_97<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
-        self.base1 = self.addr_zpi(sys, self.y)?;
-        self.store(sys, self.base1, self.a & self.x)
+        self.poll_prev_signals(sys);
+        Some(())
     }
 
     // TYA
@@ -1202,35 +1134,16 @@ impl Cpu {
         Some(())
     }
 
-    // TAS $nnnn,Y
+    // NOP (single-cycle)
     fn op_9B<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
-        self.base1 = self.addr_abs(sys)?;
-        self.sp = self.a & self.x;
-        // TODO: match and check if sys.rdy to remove &{H+1}
-        self.read(sys, self.base1.no_carry(self.y))?;
-        self.lo_byte = self.a & self.x & (self.base1.hi() + 1);
-        if self.base1.check_carry(self.y) {
-            self.base1 =
-                Addr::from_bytes((self.base1 + self.y).lo(), self.lo_byte);
-        } else {
-            self.base1 += self.y
-        }
-        self.store(sys, self.base1, self.lo_byte)
+        self.poll_prev_signals(sys);
+        Some(())
     }
 
-    // SHY $nnnn,X
+    // STZ $nnnn
     fn op_9C<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_abs(sys)?;
-        // TODO: match and check if sys.rdy
-        self.read(sys, self.base1.no_carry(self.x))?;
-        self.lo_byte = self.y & (self.base1.hi() + 1);
-        if self.base1.check_carry(self.x) {
-            self.base1 =
-                Addr::from_bytes((self.base1 + self.x).lo(), self.lo_byte);
-        } else {
-            self.base1 += self.x
-        }
-        self.store(sys, self.base1, self.lo_byte)
+        self.store(sys, self.base1, MachineInt(0))
     }
 
     // STA $nnnn,X
@@ -1239,34 +1152,16 @@ impl Cpu {
         self.store(sys, self.base1, self.a)
     }
 
-    // SHX $nnnn,Y
+    // STZ $nnnn,X
     fn op_9E<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
-        self.base1 = self.addr_abs(sys)?;
-        // TODO: match and check if sys.rdy to remove &{H+1}
-        self.read(sys, self.base1.no_carry(self.y))?;
-        self.lo_byte = self.x & (self.base1.hi() + 1);
-        if self.base1.check_carry(self.y) {
-            self.base1 =
-                Addr::from_bytes((self.base1 + self.y).lo(), self.lo_byte);
-        } else {
-            self.base1 += self.y
-        }
-        self.store(sys, self.base1, self.lo_byte)
+        self.base1 = self.addr_abi(sys, self.x, true)?;
+        self.store(sys, self.base1, MachineInt(0))
     }
 
-    // AHX $nnnn,Y
+    // NOP (single-cycle)
     fn op_9F<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
-        self.base1 = self.addr_abs(sys)?;
-        // TODO: match and check if sys.rdy to remove &{H+1}
-        self.read(sys, self.base1.no_carry(self.y))?;
-        self.lo_byte = self.a & self.x & (self.base1.hi() + 1);
-        if self.base1.check_carry(self.y) {
-            self.base1 =
-                Addr::from_bytes((self.base1 + self.y).lo(), self.lo_byte);
-        } else {
-            self.base1 += self.y
-        }
-        self.store(sys, self.base1, self.lo_byte)
+        self.poll_prev_signals(sys);
+        Some(())
     }
 
     // LDY #nn
@@ -1291,12 +1186,9 @@ impl Cpu {
         Some(())
     }
 
-    // LAX ($nn,X)
+    // NOP (single-cycle)
     fn op_A3<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
-        self.base1 = self.addr_izx(sys)?;
-        self.x = self.load(sys, self.base1)?;
-        self.a = self.x;
-        self.flags.nz(self.x);
+        self.poll_prev_signals(sys);
         Some(())
     }
 
@@ -1324,12 +1216,9 @@ impl Cpu {
         Some(())
     }
 
-    // LAX $nn
+    // NOP (single-cycle)
     fn op_A7<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
-        self.base1 = self.addr_zp(sys)?;
-        self.x = self.load(sys, self.base1)?;
-        self.a = self.x;
-        self.flags.nz(self.x);
+        self.poll_prev_signals(sys);
         Some(())
     }
 
@@ -1356,14 +1245,9 @@ impl Cpu {
         Some(())
     }
 
-    // LAX #nn
+    // NOP (single-cycle)
     fn op_AB<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
-        // Unstable: A = X = (A | magic) & #nn
-        // This implementation uses magic = 0.
-        let val = self.immediate(sys)? & self.a;
-        self.a = val;
-        self.x = val;
-        self.flags.nz(val);
+        self.poll_prev_signals(sys);
         Some(())
     }
 
@@ -1391,12 +1275,9 @@ impl Cpu {
         Some(())
     }
 
-    // LAX $nnnn
+    // NOP (single-cycle)
     fn op_AF<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
-        self.base1 = self.addr_abs(sys)?;
-        self.x = self.load(sys, self.base1)?;
-        self.a = self.x;
-        self.flags.nz(self.x);
+        self.poll_prev_signals(sys);
         Some(())
     }
 
@@ -1413,17 +1294,17 @@ impl Cpu {
         Some(())
     }
 
-    // KIL
-    fn op_B2<S: Sys>(&mut self, _sys: &mut S) -> Option<()> {
-        self.halt()
+    // LDA ($nn)
+    fn op_B2<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+        self.base1 = self.addr_izp(sys)?;
+        self.a = self.load(sys, self.base1)?;
+        self.flags.nz(self.a);
+        Some(())
     }
 
-    // LAX ($nn),Y
+    // NOP (single-cycle)
     fn op_B3<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
-        self.base1 = self.addr_izy(sys, false)?;
-        self.x = self.load(sys, self.base1)?;
-        self.a = self.x;
-        self.flags.nz(self.x);
+        self.poll_prev_signals(sys);
         Some(())
     }
 
@@ -1451,12 +1332,9 @@ impl Cpu {
         Some(())
     }
 
-    // LAX $nn,Y
+    // NOP (single-cycle)
     fn op_B7<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
-        self.base1 = self.addr_zpi(sys, self.y)?;
-        self.x = self.load(sys, self.base1)?;
-        self.a = self.x;
-        self.flags.nz(self.x);
+        self.poll_prev_signals(sys);
         Some(())
     }
 
@@ -1483,13 +1361,9 @@ impl Cpu {
         Some(())
     }
 
-    // LAS $nnnn,Y
+    // NOP (single-cycle)
     fn op_BB<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
-        self.base1 = self.addr_abi(sys, self.y, false)?;
-        let val = self.load(sys, self.base1)?;
-        self.sp &= val;
-        self.a = self.sp;
-        self.x = self.sp;
+        self.poll_prev_signals(sys);
         Some(())
     }
 
@@ -1517,12 +1391,9 @@ impl Cpu {
         Some(())
     }
 
-    // LAX $nnnn,Y
+    // NOP (single-cycle)
     fn op_BF<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
-        self.base1 = self.addr_abi(sys, self.y, false)?;
-        self.x = self.load(sys, self.base1)?;
-        self.a = self.x;
-        self.flags.nz(self.x);
+        self.poll_prev_signals(sys);
         Some(())
     }
 
@@ -1541,17 +1412,15 @@ impl Cpu {
         Some(())
     }
 
-    // NOP* #nn
+    // NOP #nn
     fn op_C2<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.immediate(sys)?;
         Some(())
     }
 
-    // DCP ($nn,X)
+    // NOP (single-cycle)
     fn op_C3<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
-        self.base1 = self.addr_izx(sys)?;
-        self.rmw(sys, self.base1, Cpu::DEC)?;
-        self.CMP(self.a, self.lo_byte);
+        self.poll_prev_signals(sys);
         Some(())
     }
 
@@ -1574,14 +1443,12 @@ impl Cpu {
     // DEC $nn
     fn op_C6<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_zp(sys)?;
-        self.rmw(sys, self.base1, Cpu::DEC)
+        self.rmw(sys, self.base1, Cmos::DEC)
     }
 
-    // DCP $nn
+    // NOP (single-cycle)
     fn op_C7<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
-        self.base1 = self.addr_zp(sys)?;
-        self.rmw(sys, self.base1, Cpu::DEC)?;
-        self.CMP(self.a, self.lo_byte);
+        self.poll_prev_signals(sys);
         Some(())
     }
 
@@ -1608,13 +1475,9 @@ impl Cpu {
         Some(())
     }
 
-    // ASX #nn
+    // NOP (single-cycle)
     fn op_CB<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
-        let val = self.immediate(sys)?;
-        self.x &= self.a;
-        self.flags.set_c(self.x >= val);
-        self.x -= val;
-        self.flags.nz(self.x);
+        self.poll_prev_signals(sys);
         Some(())
     }
 
@@ -1637,14 +1500,12 @@ impl Cpu {
     // DEC $nnnn
     fn op_CE<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_abs(sys)?;
-        self.rmw(sys, self.base1, Cpu::DEC)
+        self.rmw(sys, self.base1, Cmos::DEC)
     }
 
-    // DCP $nnnn
+    // NOP (single-cycle)
     fn op_CF<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
-        self.base1 = self.addr_abs(sys)?;
-        self.rmw(sys, self.base1, Cpu::DEC)?;
-        self.CMP(self.a, self.lo_byte);
+        self.poll_prev_signals(sys);
         Some(())
     }
 
@@ -1653,7 +1514,7 @@ impl Cpu {
         self.branch(sys, !self.flags.z())
     }
 
-    // CMP($nn),Y
+    // CMP ($nn),Y
     fn op_D1<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_izy(sys, false)?;
         let val = self.load(sys, self.base1)?;
@@ -1661,20 +1522,21 @@ impl Cpu {
         Some(())
     }
 
-    // KIL
-    fn op_D2<S: Sys>(&mut self, _sys: &mut S) -> Option<()> {
-        self.halt()
-    }
-
-    // DCP ($nn),Y
-    fn op_D3<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
-        self.base1 = self.addr_izy(sys, true)?;
-        self.rmw(sys, self.base1, Cpu::DEC)?;
-        self.CMP(self.a, self.lo_byte);
+    // CMP ($nn)
+    fn op_D2<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+        self.base1 = self.addr_izp(sys)?;
+        let val = self.load(sys, self.base1)?;
+        self.CMP(self.a, val);
         Some(())
     }
 
-    // NOP* $nn,X
+    // NOP (single-cycle)
+    fn op_D3<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+        self.poll_prev_signals(sys);
+        Some(())
+    }
+
+    // NOP $nn,X
     fn op_D4<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_zpi(sys, self.x)?;
         self.load(sys, self.base1)?;
@@ -1692,14 +1554,12 @@ impl Cpu {
     // DEC $nn,X
     fn op_D6<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_zpi(sys, self.x)?;
-        self.rmw(sys, self.base1, Cpu::DEC)
+        self.rmw(sys, self.base1, Cmos::DEC)
     }
 
-    // DCP $nn,X
+    // NOP (single-cycle)
     fn op_D7<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
-        self.base1 = self.addr_zpi(sys, self.x)?;
-        self.rmw(sys, self.base1, Cpu::DEC)?;
-        self.CMP(self.a, self.lo_byte);
+        self.poll_prev_signals(sys);
         Some(())
     }
 
@@ -1718,23 +1578,24 @@ impl Cpu {
         Some(())
     }
 
-    // NOP*
+    // PHX
     fn op_DA<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
-        self.implicit(sys)
-    }
-
-    // DCP $nnnn,Y
-    fn op_DB<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
-        self.base1 = self.addr_abi(sys, self.y, true)?;
-        self.rmw(sys, self.base1, Cpu::DEC)?;
-        self.CMP(self.a, self.lo_byte);
+        self.read(sys, self.pc)?;
+        self.store(sys, Addr::stack(self.sp), self.x)?;
+        self.sp -= 1;
         Some(())
     }
 
-    // NOP* $nnnn,X
+    // NOP (single-cycle)
+    fn op_DB<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+        self.poll_prev_signals(sys);
+        Some(())
+    }
+
+    // NOP $nnnn,X (4-cycle)
     fn op_DC<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
-        self.base1 = self.addr_abi(sys, self.x, false)?;
-        self.load(sys, self.base1)?;
+        self.base1 = self.addr_abs(sys)?;
+        self.load(sys, self.base1.no_carry(self.x))?;
         Some(())
     }
 
@@ -1749,14 +1610,12 @@ impl Cpu {
     // DEC $nnnn,X
     fn op_DE<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_abi(sys, self.x, true)?;
-        self.rmw(sys, self.base1, Cpu::DEC)
+        self.rmw(sys, self.base1, Cmos::DEC)
     }
 
-    // DCP $nnnn,X
+    // NOP (single-cycle)
     fn op_DF<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
-        self.base1 = self.addr_abi(sys, self.x, true)?;
-        self.rmw(sys, self.base1, Cpu::DEC)?;
-        self.CMP(self.a, self.lo_byte);
+        self.poll_prev_signals(sys);
         Some(())
     }
 
@@ -1770,22 +1629,18 @@ impl Cpu {
     // SBC ($nn,X)
     fn op_E1<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_izx(sys)?;
-        let val = self.load(sys, self.base1)?;
-        self.SBC(val);
-        Some(())
+        self.decimal(sys, self.base1, Cmos::SBC)
     }
 
-    // NOP* #nn
+    // NOP #nn
     fn op_E2<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.immediate(sys)?;
         Some(())
     }
 
-    // ISC ($nn,X)
+    // NOP (single-cycle)
     fn op_E3<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
-        self.base1 = self.addr_izx(sys)?;
-        self.rmw(sys, self.base1, Cpu::INC)?;
-        self.SBC(self.lo_byte);
+        self.poll_prev_signals(sys);
         Some(())
     }
 
@@ -1800,22 +1655,18 @@ impl Cpu {
     // SBC $nn
     fn op_E5<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_zp(sys)?;
-        let val = self.load(sys, self.base1)?;
-        self.SBC(val);
-        Some(())
+        self.decimal(sys, self.base1, Cmos::SBC)
     }
 
     // INC $nn
     fn op_E6<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_zp(sys)?;
-        self.rmw(sys, self.base1, Cpu::INC)
+        self.rmw(sys, self.base1, Cmos::INC)
     }
 
-    // ISC $nn
+    // NOP (single-cycle)
     fn op_E7<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
-        self.base1 = self.addr_zp(sys)?;
-        self.rmw(sys, self.base1, Cpu::INC)?;
-        self.SBC(self.lo_byte);
+        self.poll_prev_signals(sys);
         Some(())
     }
 
@@ -1829,8 +1680,14 @@ impl Cpu {
 
     // SBC #nn
     fn op_E9<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
-        let val = self.immediate(sys)?;
-        self.SBC(val);
+        if !self.flags.d {
+            self.poll_signals(sys);
+        }
+        self.lo_byte = self.fetch_operand(sys)?;
+        if self.flags.d {
+            self.load(sys, self.pc)?;
+        }
+        self.SBC(self.lo_byte);
         Some(())
     }
 
@@ -1839,10 +1696,9 @@ impl Cpu {
         self.implicit(sys)
     }
 
-    // SBC #imm
+    // NOP (single-cycle)
     fn op_EB<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
-        let val = self.immediate(sys)?;
-        self.SBC(val);
+        self.poll_prev_signals(sys);
         Some(())
     }
 
@@ -1857,22 +1713,18 @@ impl Cpu {
     // SBC $nnnn
     fn op_ED<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_abs(sys)?;
-        let val = self.load(sys, self.base1)?;
-        self.SBC(val);
-        Some(())
+        self.decimal(sys, self.base1, Cmos::SBC)
     }
 
     // INC $nnnn
     fn op_EE<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_abs(sys)?;
-        self.rmw(sys, self.base1, Cpu::INC)
+        self.rmw(sys, self.base1, Cmos::INC)
     }
 
-    // ISC $nnnn
+    // NOP (single-cycle)
     fn op_EF<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
-        self.base1 = self.addr_abs(sys)?;
-        self.rmw(sys, self.base1, Cpu::INC)?;
-        self.SBC(self.lo_byte);
+        self.poll_prev_signals(sys);
         Some(())
     }
 
@@ -1884,25 +1736,22 @@ impl Cpu {
     // SBC ($nn),Y
     fn op_F1<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_izy(sys, false)?;
-        let val = self.load(sys, self.base1)?;
-        self.SBC(val);
-        Some(())
+        self.decimal(sys, self.base1, Cmos::SBC)
     }
 
-    // KIL
-    fn op_F2<S: Sys>(&mut self, _sys: &mut S) -> Option<()> {
-        self.halt()
+    // SBC ($nn)
+    fn op_F2<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+        self.base1 = self.addr_izp(sys)?;
+        self.decimal(sys, self.base1, Cmos::SBC)
     }
 
-    // ISC ($nn),Y
+    // NOP (single-cycle)
     fn op_F3<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
-        self.base1 = self.addr_izy(sys, true)?;
-        self.rmw(sys, self.base1, Cpu::INC)?;
-        self.SBC(self.lo_byte);
+        self.poll_prev_signals(sys);
         Some(())
     }
 
-    // NOP* $nn,X
+    // NOP $nn,X
     fn op_F4<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_zpi(sys, self.x)?;
         self.load(sys, self.base1)?;
@@ -1912,22 +1761,18 @@ impl Cpu {
     // SBC $nn,X
     fn op_F5<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_zpi(sys, self.x)?;
-        let val = self.load(sys, self.base1)?;
-        self.SBC(val);
-        Some(())
+        self.decimal(sys, self.base1, Cmos::SBC)
     }
 
     // INC $nn,X
     fn op_F6<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_zpi(sys, self.x)?;
-        self.rmw(sys, self.base1, Cpu::INC)
+        self.rmw(sys, self.base1, Cmos::INC)
     }
 
-    // ISC $nn,X
+    // NOP (single-cycle)
     fn op_F7<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
-        self.base1 = self.addr_zpi(sys, self.x)?;
-        self.rmw(sys, self.base1, Cpu::INC)?;
-        self.SBC(self.lo_byte);
+        self.poll_prev_signals(sys);
         Some(())
     }
 
@@ -1941,55 +1786,52 @@ impl Cpu {
     // SBC $nnnn,Y
     fn op_F9<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_abi(sys, self.y, false)?;
-        let val = self.load(sys, self.base1)?;
-        self.SBC(val);
-        Some(())
+        self.decimal(sys, self.base1, Cmos::SBC)
     }
 
-    // NOP*
+    // PLX
     fn op_FA<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
-        self.implicit(sys)
-    }
-
-    // ISC $nnnn,Y
-    fn op_FB<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
-        self.base1 = self.addr_abi(sys, self.y, true)?;
-        self.rmw(sys, self.base1, Cpu::INC)?;
-        self.SBC(self.lo_byte);
+        self.read(sys, self.pc)?;
+        self.read_stack(sys)?;
+        self.sp += 1;
+        self.x = self.load(sys, Addr::stack(self.sp))?;
+        self.flags.nz(self.x);
         Some(())
     }
 
-    // NOP* $nnnn,X
+    // NOP (single-cycle)
+    fn op_FB<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+        self.poll_prev_signals(sys);
+        Some(())
+    }
+
+    // NOP $nnnn,X (4-cycle)
     fn op_FC<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
-        self.base1 = self.addr_abi(sys, self.x, false)?;
-        self.load(sys, self.base1)?;
+        self.base1 = self.addr_abs(sys)?;
+        self.load(sys, self.base1.no_carry(self.x))?;
         Some(())
     }
 
     // SBC $nnnn,X
     fn op_FD<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_abi(sys, self.x, false)?;
-        let val = self.load(sys, self.base1)?;
-        self.SBC(val);
-        Some(())
+        self.decimal(sys, self.base1, Cmos::SBC)
     }
 
     // INC $nnnn,X
     fn op_FE<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_abi(sys, self.x, true)?;
-        self.rmw(sys, self.base1, Cpu::INC)
+        self.rmw(sys, self.base1, Cmos::INC)
     }
 
-    // ISC $nnnn,X
+    // NOP (single-cycle)
     fn op_FF<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
-        self.base1 = self.addr_abi(sys, self.x, true)?;
-        self.rmw(sys, self.base1, Cpu::INC)?;
-        self.SBC(self.lo_byte);
+        self.poll_prev_signals(sys);
         Some(())
     }
 }
 
-impl Cpu {
+impl Cmos {
     #[cfg_attr(
         feature = "cargo-clippy",
         allow(clippy::cyclomatic_complexity)

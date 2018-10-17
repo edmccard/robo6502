@@ -6,7 +6,7 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use robo6502::{Cpu, NmiLength, Status, Sys};
+use robo6502::{Cmos, Cpu, NmiLength, Nmos, Status, Sys};
 
 use self::common::*;
 
@@ -14,6 +14,11 @@ mod common;
 
 #[test]
 fn hijack() {
+    hijack_impl(test_cpu_nmos());
+    hijack_impl(test_cpu_cmos());
+}
+
+fn hijack_impl<C: Cpu>(cpu: C) {
     // needed for run_test
     let mut tested = [false; 256];
 
@@ -24,7 +29,7 @@ fn hijack() {
         NmiLength::Plenty,
     );
     test.exp_pc[1..].copy_from_slice(&[0x0400, 0x0401, 0x0402, 0x0403]);
-    run_test(test_cpu(), 5, test, &mut tested);
+    run_test(cpu.clone(), 5, test, &mut tested);
 
     for cyc in 1..6 {
         let test = IntTest {
@@ -35,7 +40,7 @@ fn hijack() {
             irq_on: Some(-1),
             nmi_length: NmiLength::Plenty,
         };
-        run_test(test_cpu(), 5, test, &mut tested);
+        run_test(cpu.clone(), 5, test, &mut tested);
     }
     for cyc in 6..9 {
         let test = IntTest {
@@ -46,19 +51,35 @@ fn hijack() {
             irq_on: Some(-1),
             nmi_length: NmiLength::Plenty,
         };
-        run_test(test_cpu(), 5, test, &mut tested);
+        run_test(cpu.clone(), 5, test, &mut tested);
     }
 
-    for cyc in 0..4 {
-        let test = IntTest {
-            desc: format!("nmi-brk-{}", cyc),
-            exp_pc: vec![0x0200, 0x0300, 0x0301, 0x0302, 0x0303],
-            mem: make_mem(vec![0x00]),
-            nmi_on: Some(cyc),
-            irq_on: None,
-            nmi_length: NmiLength::Plenty,
-        };
-        run_test(test_cpu(), 5, test, &mut tested);
+    if cpu.is_nmos() {
+        // NMI hijacks BRK in NMOS
+        for cyc in 0..4 {
+            let test = IntTest {
+                desc: format!("nmi-brk-{}", cyc),
+                exp_pc: vec![0x0200, 0x0300, 0x0301, 0x0302, 0x0303],
+                mem: make_mem(vec![0x00]),
+                nmi_on: Some(cyc),
+                irq_on: None,
+                nmi_length: NmiLength::Plenty,
+            };
+            run_test(cpu.clone(), 5, test, &mut tested);
+        }
+    } else {
+        // NMI does not hijack BRK in CMOS
+        for cyc in 0..4 {
+            let test = IntTest {
+                desc: format!("nmi-brk-{}", cyc),
+                exp_pc: vec![0x0200, 0x0400, 0x0401, 0x0300, 0x0301],
+                mem: make_mem(vec![0x00]),
+                nmi_on: Some(cyc),
+                irq_on: None,
+                nmi_length: NmiLength::Plenty,
+            };
+            run_test(cpu.clone(), 5, test, &mut tested);
+        }
     }
     for cyc in 5..8 {
         let test = IntTest {
@@ -69,17 +90,23 @@ fn hijack() {
             irq_on: None,
             nmi_length: NmiLength::Plenty,
         };
-        run_test(test_cpu(), 5, test, &mut tested);
+        run_test(cpu.clone(), 5, test, &mut tested);
     }
 }
 
 #[test]
 fn flag_change() {
+    flag_change_impl(test_cpu_nmos());
+    flag_change_impl(test_cpu_cmos());
+}
+
+fn flag_change_impl<C: Cpu>(cpu: C) {
     // needed for run_test
     let mut tested = [false; 256];
 
-    let mut cpu = test_cpu();
-    cpu.set_flag(Status::I, true);
+    let mut id_on = cpu.clone();
+    let id_off = cpu.clone();
+    id_on.set_flag(Status::I, true);
 
     // CLI and PLP (with I flag off on stack) turn off I flag
     // after polling
@@ -89,7 +116,7 @@ fn flag_change() {
         false,
         NmiLength::Plenty,
     );
-    run_test(cpu.clone(), 5, test, &mut tested);
+    run_test(id_on.clone(), 5, test, &mut tested);
 
     let test = delay(
         ("plp".to_owned(), vec![0x28], 0),
@@ -97,7 +124,7 @@ fn flag_change() {
         false,
         NmiLength::Plenty,
     );
-    run_test(cpu.clone(), 5, test, &mut tested);
+    run_test(id_on.clone(), 5, test, &mut tested);
 
     // RTI turns off I flag before polling
     let test = no_delay(
@@ -106,7 +133,7 @@ fn flag_change() {
         false,
         NmiLength::Plenty,
     );
-    run_test(cpu.clone(), 5, test, &mut tested);
+    run_test(id_on.clone(), 5, test, &mut tested);
 
     // SEI turns on I flag after polling (so the irq is serviced, and
     // without delay)
@@ -116,7 +143,7 @@ fn flag_change() {
         false,
         NmiLength::Plenty,
     );
-    run_test(test_cpu(), 5, test, &mut tested);
+    run_test(id_off.clone(), 5, test, &mut tested);
 
     // PLP (with I flag set on stack) turns on I before polling
     // (so there is no delay)
@@ -127,52 +154,98 @@ fn flag_change() {
         NmiLength::Plenty,
     );
     test.mem[0x0101] = 0x34;
-    run_test(test_cpu(), 5, test, &mut tested);
+    run_test(id_off.clone(), 5, test, &mut tested);
 }
 
 #[test]
 fn polling() {
+    polling_impl(test_cpu_nmos());
+    polling_impl(test_cpu_cmos());
+}
+
+fn polling_impl<C: Cpu>(cpu: C) {
     let mut tested = [false; 256];
 
-    // Ignore KIL, and BRK (tested elsewhere)
-    let kil: [usize; 13] = [
-        0x02, 0x12, 0x22, 0x32, 0x42, 0x52, 0x62, 0x72, 0x92, 0xb2, 0xd2, 0xf2,
-        0x00,
-    ];
-    for op in kil.iter() {
-        tested[*op] = true;
+    // BRK is tested elsewhere
+    tested[0x00] = true;
+
+    if cpu.is_nmos() {
+        // Skip KIL
+        let kil: [usize; 12] = [
+            0x02, 0x12, 0x22, 0x32, 0x42, 0x52, 0x62, 0x72, 0x92, 0xb2, 0xd2,
+            0xf2,
+        ];
+        for op in kil.iter() {
+            tested[*op] = true;
+        }
     }
 
     // Regular ops
     for op in 0..256 {
-        if let Some(tests) = op_intr(op as u8) {
+        if let Some(tests) = op_intr(op as u8, cpu.is_nmos()) {
             for test in tests {
-                run_test(test_cpu(), 5, test, &mut tested);
+                run_test(cpu.clone(), 5, test, &mut tested);
             }
+        }
+    }
+
+    if !cpu.is_nmos() {
+        let ops: [u8; 18] = [
+            0x61, 0x65, 0x69, 0x6d, 0x71, 0x72, 0x75, 0x79, 0x7d, 0xe1, 0xe5,
+            0xe9, 0xed, 0xf1, 0xf2, 0xf5, 0xf9, 0xfd,
+        ];
+        for op in ops.iter() {
+            test_decimal_mode(cpu.clone(), *op, &mut tested);
         }
     }
 
     // Branch ops
     for op in 0..256 {
-        if let AddrMode::REL = ADDR_MODES[op] {
-            test_rel(op as u8, &mut tested);
+        use self::common::CpuAddrMode::*;
+        let addr_mode = match ADDR_MODES[op] {
+            S(mode) => mode,
+            D(nmode, cmode) => {
+                if cpu.is_nmos() {
+                    nmode
+                } else {
+                    cmode
+                }
+            }
+        };
+        if let AddrMode::REL = addr_mode {
+            test_rel(cpu.clone(), op as u8, &mut tested);
         }
     }
 
-    test_push(0x08, &mut tested); // PHP
-    test_push(0x48, &mut tested); // PHA
-    test_pull(0x28, &mut tested); // PLP
-    test_pull(0x68, &mut tested); // PLA
-    test_jmp(&mut tested); // JMP $nnnn and JMP ($nnnn)
-    test_rti(&mut tested); // RTI
-    test_jsr(&mut tested); // JSR
-    test_rts(&mut tested); // RTS
+    test_push(cpu.clone(), 0x08, &mut tested); // PHP
+    test_push(cpu.clone(), 0x48, &mut tested); // PHA
+    if !cpu.is_nmos() {
+        test_push(cpu.clone(), 0xda, &mut tested); // PHX
+        test_push(cpu.clone(), 0x5a, &mut tested); // PHY
+    }
+    test_pull(cpu.clone(), 0x28, &mut tested); // PLP
+    test_pull(cpu.clone(), 0x68, &mut tested); // PLA
+    if !cpu.is_nmos() {
+        test_pull(cpu.clone(), 0xfa, &mut tested); // PLX
+        test_pull(cpu.clone(), 0x7a, &mut tested); // PLY
+    }
+    test_jmp(cpu.clone(), &mut tested); // JMP $nnnn and JMP ($nnnn)
+    test_rti(cpu.clone(), &mut tested); // RTI
+    test_jsr(cpu.clone(), &mut tested); // JSR
+    test_rts(cpu.clone(), &mut tested); // RTS
 
+    for (i, t) in tested.iter().enumerate() {
+        if !t {
+            println!("MISSED: {:02x}", i);
+        }
+    }
     assert!(tested.iter().all(|&p| p));
 }
 
 #[test]
 fn swallowed_nmi() {
+    let cpu = test_cpu_nmos();
+
     // needed for run_test
     let mut tested = [false; 256];
 
@@ -189,7 +262,7 @@ fn swallowed_nmi() {
                 _ => unreachable!(),
             },
         };
-        run_test(test_cpu(), 5, test, &mut tested);
+        run_test(cpu.clone(), 5, test, &mut tested);
     }
 
     for cyc in 6..8 {
@@ -205,26 +278,77 @@ fn swallowed_nmi() {
                 _ => unreachable!(),
             },
         };
-        run_test(test_cpu(), 5, test, &mut tested);
+        run_test(cpu.clone(), 5, test, &mut tested);
     }
 }
 
-fn op_intr(op: u8) -> Option<Vec<IntTest>> {
+fn test_decimal_mode<C: Cpu>(mut cpu: C, op: u8, pass: &mut [bool]) {
     use self::common::AddrMode::*;
+    use self::common::CpuAddrMode::*;
+
+    let addr_mode = match ADDR_MODES[op as usize] {
+        S(mode) => mode,
+        D(_, mode) => mode,
+    };
+    let bases: Vec<CycleTest> = match addr_mode {
+        DECIMM => cycles_imm(op),
+        ZP(_) => cycles_zp(op),
+        ABS(_) => cycles_abs(op),
+        ZPI(_) => cycles_zpi(op),
+        IZX(_) => cycles_izx(op),
+        ABI(_) => cycles_abi(op, MemAction::Load),
+        IZY(_) => cycles_izy(op, MemAction::Load),
+        IZP(_) => cycles_izp(op),
+        _ => unreachable!(),
+    };
+
+    let tests: Vec<CycleTest> = bases
+        .iter()
+        .map(|base| (base.0.clone(), base.1.clone(), base.2 + 1))
+        .collect();
+
+    cpu.set_flag(Status::D, true);
+    for test in tests {
+        for test in delay_tests(test) {
+            run_test(cpu.clone(), 5, test, pass);
+        }
+    }
+}
+
+fn op_intr(op: u8, is_nmos: bool) -> Option<Vec<IntTest>> {
+    use self::common::AddrMode::*;
+    use self::common::CpuAddrMode::*;
     use self::common::MemAction::*;
 
-    let (bases, action): (Vec<CycleTest>, Option<MemAction>) =
-        match ADDR_MODES[op as usize] {
-            IMP => (cycles_imp(op), None),
-            IMM => (cycles_imm(op), None),
-            ZP(action) => (cycles_zp(op), Some(action)),
-            ABS(action) => (cycles_abs(op), Some(action)),
-            ZPI(action) => (cycles_zpi(op), Some(action)),
-            IZX(action) => (cycles_izx(op), Some(action)),
-            ABI(action) => (cycles_abi(op, action), Some(action)),
-            IZY(action) => (cycles_izy(op, action), Some(action)),
+    let addr_mode = match ADDR_MODES[op as usize] {
+        S(mode) => mode,
+        D(nmode, cmode) => {
+            if is_nmos {
+                nmode
+            } else {
+                cmode
+            }
+        }
+    };
+    let (bases, action): (Vec<CycleTest>, Option<MemAction>) = match addr_mode {
+        IMP => (cycles_imp(op), None),
+        IMM => (cycles_imm(op), None),
+        DECIMM => (cycles_imm(op), None),
+        ZP(action) => (cycles_zp(op), Some(action)),
+        ABS(action) => (cycles_abs(op), Some(action)),
+        ZPI(action) => (cycles_zpi(op), Some(action)),
+        IZX(action) => (cycles_izx(op), Some(action)),
+        ABI(action) => (cycles_abi(op, action), Some(action)),
+        IZY(action) => (cycles_izy(op, action), Some(action)),
+        IZP(action) => (cycles_izp(op), Some(action)),
+        ABX(action) => (cycles_abi(op, Load), Some(action)),
+        NONE => (cycles_nop1(op), None),
+        _ => match op {
+            0x5c => (cycles_nop8(op), None),
+            0xdc | 0xfc => (cycles_abs(op), None),
             _ => return None,
-        };
+        },
+    };
 
     let tests: Vec<CycleTest> = bases
         .iter()
@@ -232,10 +356,13 @@ fn op_intr(op: u8) -> Option<Vec<IntTest>> {
             let final_cycles = match action {
                 Some(RmwInc) => 2,
                 Some(RmwDec) => 2,
+                Some(RmwTsb) => 2,
+                Some(RmwTrb) => 2,
                 _ => 0,
             };
             (base.0.clone(), base.1.clone(), base.2 + final_cycles)
-        }).collect();
+        })
+        .collect();
 
     let mut int_tests: Vec<IntTest> = vec![];
 
@@ -270,34 +397,38 @@ fn delay_tests(test: CycleTest) -> Vec<IntTest> {
     int_tests
 }
 
-fn test_rel(op: u8, pass: &mut [bool]) {
-    let (flag, set) = branch_flag(op);
-    let mut skip = test_cpu();
-    let mut take = test_cpu();
-    skip.set_flag(flag, !set);
-    take.set_flag(flag, set);
+fn test_rel<C: Cpu>(cpu: C, op: u8, pass: &mut [bool]) {
+    let mut skip = cpu.clone();
+    let mut take = cpu.clone();
 
-    let mut int_tests: Vec<IntTest> = vec![];
-    let test = ("branch-skip".to_owned(), vec![op, 00], 1);
-    for nmi in &[true, false] {
-        for cyc in -1..1 {
-            int_tests.push(no_delay(
-                test.clone(),
-                cyc,
-                *nmi,
-                NmiLength::Plenty,
-            ));
+    if op != 0x80 {
+        let (flag, set) = branch_flag(op);
+        skip.set_flag(flag, !set);
+        take.set_flag(flag, set);
+
+        let mut int_tests: Vec<IntTest> = vec![];
+        let test = ("branch-skip".to_owned(), vec![op, 00], 1);
+        for nmi in &[true, false] {
+            for cyc in -1..1 {
+                int_tests.push(no_delay(
+                    test.clone(),
+                    cyc,
+                    *nmi,
+                    NmiLength::Plenty,
+                ));
+            }
+            int_tests.push(delay(test.clone(), 1, *nmi, NmiLength::Plenty));
         }
-        int_tests.push(delay(test.clone(), 1, *nmi, NmiLength::Plenty));
-    }
-    for test in int_tests {
-        run_test(skip.clone(), 5, test, pass);
+        for test in int_tests {
+            run_test(skip.clone(), 5, test, pass);
+        }
     }
 
     let mut int_tests: Vec<IntTest> = vec![];
     let test = ("branch-take".to_owned(), vec![op, 0x00], 1);
     for nmi in &[true, false] {
-        for cyc in -1..1 {
+        let delay_cyc = if cpu.is_nmos() { 1 } else { 2 };
+        for cyc in -1..delay_cyc {
             int_tests.push(no_delay(
                 test.clone(),
                 cyc,
@@ -305,12 +436,12 @@ fn test_rel(op: u8, pass: &mut [bool]) {
                 NmiLength::Plenty,
             ));
         }
-        for cyc in 1..3 {
+        for cyc in delay_cyc..3 {
             int_tests.push(delay(test.clone(), cyc, *nmi, NmiLength::Plenty));
         }
     }
     for test in int_tests {
-        run_test(skip.clone(), 5, test, pass);
+        run_test(take.clone(), 5, test, pass);
     }
 
     let mut int_tests: Vec<IntTest> = vec![];
@@ -331,50 +462,57 @@ fn test_rel(op: u8, pass: &mut [bool]) {
     }
 }
 
-fn test_pull(op: u8, pass: &mut [bool]) {
+fn test_pull<C: Cpu>(cpu: C, op: u8, pass: &mut [bool]) {
     let test = ("pull".to_owned(), vec![op], 3);
     for test in delay_tests(test) {
-        run_test(test_cpu(), 5, test, pass);
+        run_test(cpu.clone(), 5, test, pass);
     }
 }
 
-fn test_push(op: u8, pass: &mut [bool]) {
+fn test_push<C: Cpu>(cpu: C, op: u8, pass: &mut [bool]) {
     let test = ("push".to_owned(), vec![op], 2);
     for test in delay_tests(test) {
-        run_test(test_cpu(), 5, test, pass);
+        run_test(cpu.clone(), 5, test, pass);
     }
 }
 
-fn test_jmp(pass: &mut [bool]) {
+fn test_jmp<C: Cpu>(cpu: C, pass: &mut [bool]) {
     let test = ("jmp".to_owned(), vec![0x4c, 0x03, 0x02], 2);
     for test in delay_tests(test) {
-        run_test(test_cpu(), 5, test, pass);
+        run_test(cpu.clone(), 5, test, pass);
     }
 
     let test = ("jmp".to_owned(), vec![0x6c, 0x04, 0x00], 4);
     for test in delay_tests(test) {
-        run_test(test_cpu(), 5, test, pass);
+        run_test(cpu.clone(), 5, test, pass);
+    }
+
+    if !cpu.is_nmos() {
+        let test = ("jmp".to_owned(), vec![0x7c, 0x04, 0x00], 5);
+        for test in delay_tests(test) {
+            run_test(cpu.clone(), 5, test, pass);
+        }
     }
 }
 
-fn test_rti(pass: &mut [bool]) {
+fn test_rti<C: Cpu>(cpu: C, pass: &mut [bool]) {
     let test = ("rti".to_owned(), vec![0x40], 5);
     for test in delay_tests(test) {
-        run_test(test_cpu(), 5, test, pass);
+        run_test(cpu.clone(), 5, test, pass);
     }
 }
 
-fn test_jsr(pass: &mut [bool]) {
+fn test_jsr<C: Cpu>(cpu: C, pass: &mut [bool]) {
     let test = ("jsr".to_owned(), vec![0x20, 0x03, 0x02], 5);
     for test in delay_tests(test) {
-        run_test(test_cpu(), 5, test, pass);
+        run_test(cpu.clone(), 5, test, pass);
     }
 }
 
-fn test_rts(pass: &mut [bool]) {
+fn test_rts<C: Cpu>(cpu: C, pass: &mut [bool]) {
     let test = ("rts".to_owned(), vec![0x60], 5);
     for test in delay_tests(test) {
-        run_test(test_cpu(), 5, test, pass);
+        run_test(cpu.clone(), 5, test, pass);
     }
 }
 
@@ -437,7 +575,17 @@ fn delay(
     }
 }
 
-fn run_test(mut cpu: Cpu, count: usize, test: IntTest, pass: &mut [bool]) {
+fn run_test<C: Cpu>(
+    mut cpu: C,
+    count: usize,
+    test: IntTest,
+    pass: &mut [bool],
+) {
+    let name = if cpu.is_nmos() { "nmos" } else { "cmos" };
+    let test = IntTest {
+        desc: format!("{}-{}", name, test.desc),
+        ..test
+    };
     cpu.set_pc(test.start_pc());
     let op = test.op();
     let sys = IntSys::new(test);
@@ -475,6 +623,14 @@ impl IntTest {
 
 type CycleTest = (String, Vec<u8>, usize);
 
+fn cycles_nop1(op: u8) -> Vec<CycleTest> {
+    vec![("nop1".to_owned(), vec![op], 0)]
+}
+
+fn cycles_nop8(op: u8) -> Vec<CycleTest> {
+    vec![("nop8".to_owned(), vec![op, 0x00, 0x00], 7)]
+}
+
 fn cycles_imp(op: u8) -> Vec<CycleTest> {
     vec![("imp".to_owned(), vec![op], 1)]
 }
@@ -499,30 +655,40 @@ fn cycles_izx(op: u8) -> Vec<CycleTest> {
     vec![("izx".to_owned(), vec![op, 0x00], 5)]
 }
 
+fn cycles_izp(op: u8) -> Vec<CycleTest> {
+    vec![("izp".to_owned(), vec![op, 0x00], 4)]
+}
+
 fn cycles_abi(op: u8, action: MemAction) -> Vec<CycleTest> {
-    if let MemAction::Load = action {
-        vec![
+    match action {
+        MemAction::Load | MemAction::Decimal => vec![
             ("abi-load".to_owned(), vec![op, 0x00, 0x00], 3),
             ("abi-load-page-cross".to_owned(), vec![op, 0xf0, 0x00], 4),
-        ]
-    } else {
-        vec![("abi-store".to_owned(), vec![op, 0x00, 0x00], 4)]
+        ],
+        _ => vec![("abi-store".to_owned(), vec![op, 0x00, 0x00], 4)],
     }
 }
 
 fn cycles_izy(op: u8, action: MemAction) -> Vec<CycleTest> {
-    if let MemAction::Load = action {
-        vec![
+    match action {
+        MemAction::Load | MemAction::Decimal => vec![
             ("izy-load".to_owned(), vec![op, 0x00], 4),
             ("izy-load-page-cross".to_owned(), vec![op, 0x02], 5),
-        ]
-    } else {
-        vec![("izy-store".to_owned(), vec![op, 0x00], 5)]
+        ],
+        _ => vec![("izy-store".to_owned(), vec![op, 0x00], 5)],
     }
 }
 
-fn test_cpu() -> Cpu {
-    let mut cpu = Cpu::standard();
+fn test_cpu_nmos() -> impl Cpu {
+    let mut cpu = Nmos::standard();
+    cpu.set_flag(Status::I, false);
+    cpu.set_x(0x40);
+    cpu.set_y(0x40);
+    cpu
+}
+
+fn test_cpu_cmos() -> impl Cpu {
+    let mut cpu = Cmos::new();
     cpu.set_flag(Status::I, false);
     cpu.set_x(0x40);
     cpu.set_y(0x40);
@@ -540,6 +706,8 @@ fn make_mem(code: Vec<u8>) -> Vec<u8> {
     mem[0x0002] = 0xf0; // lo byte for page-cross izy
     mem[0x0004] = 0x03; // lo byte for JMP ($nnnn)
     mem[0x0005] = 0x02; // hi byte for JMP ($nnnn)
+    mem[0x0044] = 0x03; // lo byte for JMP ($nnnn,X)
+    mem[0x0045] = 0x02; // hi byte for JMP ($nnnn,X)
     match code[0] {
         // setup for PLP
         0x28 => mem[0x0101] = 0x30, // status
@@ -662,17 +830,17 @@ impl Sys for IntSys {
 }
 
 impl TestSys for IntSys {
-    fn run_instruction(&mut self, cpu: &mut Cpu) {
+    fn run_instruction<C: Cpu>(&mut self, cpu: &mut C) {
         cpu.run_instruction(self);
     }
 }
 
 trait IntRun {
-    fn run(self, cpu: Cpu, count: usize);
+    fn run<C: Cpu>(self, cpu: C, count: usize);
 }
 
 impl<T: TestSys> IntRun for T {
-    fn run(mut self, mut cpu: Cpu, count: usize) {
+    fn run<C: Cpu>(mut self, mut cpu: C, count: usize) {
         for _ in 0..count {
             self.run_instruction(&mut cpu);
         }
