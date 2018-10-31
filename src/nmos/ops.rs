@@ -9,14 +9,13 @@
 use crate::mi::{Addr, AddrExt, AddrMath};
 use crate::{NmiLength, Nmos, Sys};
 
-mod step;
+mod cycle;
 
-#[allow(non_snake_case)]
 impl Nmos {
     // BRK
     fn op_00<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         // PC is incremented for BRK but not NMI/IRQ
-        if self.latch {
+        if self.do_int {
             self.read(sys, self.pc)?;
         } else {
             self.fetch_operand(sys)?;
@@ -42,7 +41,7 @@ impl Nmos {
 
         if self.reset {
             self.read_stack(sys)?;
-        } else if self.latch {
+        } else if self.do_int {
             // Clear B flag in saved status for NMI/IRQ
             self.write_stack(sys, self.flags.to_byte() & 0b1110_1111)?;
         } else {
@@ -51,7 +50,7 @@ impl Nmos {
         self.sp -= 1;
 
         // TODO: say why needed
-        if !self.nmi_edge
+        if !self.nmi
             && sys.peek_nmi()
             && sys.nmi_length() < NmiLength::Plenty
         {
@@ -61,7 +60,7 @@ impl Nmos {
         self.lo_byte = self.read(sys, self.base1)?;
 
         // TODO: say why needed
-        if !self.nmi_edge && sys.peek_nmi() && sys.nmi_length() < NmiLength::Two
+        if !self.nmi && sys.peek_nmi() && sys.nmi_length() < NmiLength::Two
         {
             sys.poll_nmi();
         }
@@ -141,14 +140,14 @@ impl Nmos {
     }
 
     // ASL A
-    fn op_0A<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_0a<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.implicit(sys)?;
         self.a = self.ASL(self.a);
         Some(())
     }
 
     // ANC #nn
-    fn op_0B<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_0b<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         let val = self.immediate(sys)?;
         self.AND(val);
         self.flags.set_c(self.flags.n());
@@ -156,14 +155,14 @@ impl Nmos {
     }
 
     // NOP* $nnnn
-    fn op_0C<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_0c<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_abs(sys)?;
         self.load(sys, self.base1)?;
         Some(())
     }
 
     // ORA $nnnn
-    fn op_0D<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_0d<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_abs(sys)?;
         let val = self.load(sys, self.base1)?;
         self.ORA(val);
@@ -171,13 +170,13 @@ impl Nmos {
     }
 
     // ASL $nnnn
-    fn op_0E<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_0e<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_abs(sys)?;
         self.rmw(sys, self.base1, Nmos::ASL)
     }
 
     // SLO $nnnn
-    fn op_0F<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_0f<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_abs(sys)?;
         self.rmw(sys, self.base1, Nmos::ASL)?;
         self.ORA(self.lo_byte);
@@ -255,12 +254,12 @@ impl Nmos {
     }
 
     // NOP*
-    fn op_1A<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_1a<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.implicit(sys)
     }
 
     // SLO $nnnn,Y
-    fn op_1B<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_1b<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_abi(sys, self.y, true)?;
         self.rmw(sys, self.base1, Nmos::ASL)?;
         self.ORA(self.lo_byte);
@@ -268,14 +267,14 @@ impl Nmos {
     }
 
     // NOP* $nnnn,X
-    fn op_1C<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_1c<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_abi(sys, self.x, false)?;
         self.load(sys, self.base1)?;
         Some(())
     }
 
     // ORA $nnnn,X
-    fn op_1D<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_1d<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_abi(sys, self.x, false)?;
         let val = self.load(sys, self.base1)?;
         self.ORA(val);
@@ -283,13 +282,13 @@ impl Nmos {
     }
 
     // ASL $nnnn,X
-    fn op_1E<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_1e<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_abi(sys, self.x, true)?;
         self.rmw(sys, self.base1, Nmos::ASL)
     }
 
     // SLO $nnnn,X
-    fn op_1F<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_1f<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_abi(sys, self.x, true)?;
         self.rmw(sys, self.base1, Nmos::ASL)?;
         self.ORA(self.lo_byte);
@@ -379,14 +378,14 @@ impl Nmos {
     }
 
     // ROL A
-    fn op_2A<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_2a<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.implicit(sys)?;
         self.a = self.ROL(self.a);
         Some(())
     }
 
     // ANC #nn
-    fn op_2B<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_2b<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         let val = self.immediate(sys)?;
         self.AND(val);
         self.flags.set_c(self.flags.n());
@@ -394,7 +393,7 @@ impl Nmos {
     }
 
     // BIT $nnnn
-    fn op_2C<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_2c<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_abs(sys)?;
         let val = self.load(sys, self.base1)?;
         self.BIT(val);
@@ -402,7 +401,7 @@ impl Nmos {
     }
 
     // AND $nnnn
-    fn op_2D<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_2d<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_abs(sys)?;
         let val = self.load(sys, self.base1)?;
         self.AND(val);
@@ -410,13 +409,13 @@ impl Nmos {
     }
 
     // ROL $nnnn
-    fn op_2E<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_2e<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_abs(sys)?;
         self.rmw(sys, self.base1, Nmos::ROL)
     }
 
     // RLA $nnnn
-    fn op_2F<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_2f<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_abs(sys)?;
         self.rmw(sys, self.base1, Nmos::ROL)?;
         self.AND(self.lo_byte);
@@ -494,12 +493,12 @@ impl Nmos {
     }
 
     // NOP*
-    fn op_3A<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_3a<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.implicit(sys)
     }
 
     // RLA $nnnn,Y
-    fn op_3B<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_3b<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_abi(sys, self.y, true)?;
         self.rmw(sys, self.base1, Nmos::ROL)?;
         self.AND(self.lo_byte);
@@ -507,14 +506,14 @@ impl Nmos {
     }
 
     // NOP* $nnnn,X
-    fn op_3C<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_3c<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_abi(sys, self.x, false)?;
         self.load(sys, self.base1)?;
         Some(())
     }
 
     // AND $nnnn,X
-    fn op_3D<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_3d<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_abi(sys, self.x, false)?;
         let val = self.load(sys, self.base1)?;
         self.AND(val);
@@ -522,13 +521,13 @@ impl Nmos {
     }
 
     // ROL $nnnn,X
-    fn op_3E<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_3e<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_abi(sys, self.x, true)?;
         self.rmw(sys, self.base1, Nmos::ROL)
     }
 
     // RLA $nnnn,X
-    fn op_3F<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_3f<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_abi(sys, self.x, true)?;
         self.rmw(sys, self.base1, Nmos::ROL)?;
         self.AND(self.lo_byte);
@@ -617,14 +616,14 @@ impl Nmos {
     }
 
     // LSR A
-    fn op_4A<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_4a<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.implicit(sys)?;
         self.a = self.LSR(self.a);
         Some(())
     }
 
     // ALR #nn
-    fn op_4B<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_4b<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         let val = self.immediate(sys)?;
         self.AND(val);
         self.a = self.LSR(self.a);
@@ -632,7 +631,7 @@ impl Nmos {
     }
 
     // JMP $nnnn
-    fn op_4C<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_4c<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.lo_byte = self.fetch_operand(sys)?;
         self.poll_signals(sys);
         self.hi_byte = self.fetch_operand(sys)?;
@@ -641,7 +640,7 @@ impl Nmos {
     }
 
     // EOR $nnnn
-    fn op_4D<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_4d<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_abs(sys)?;
         let val = self.load(sys, self.base1)?;
         self.EOR(val);
@@ -649,13 +648,13 @@ impl Nmos {
     }
 
     // LSR $nnnn
-    fn op_4E<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_4e<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_abs(sys)?;
         self.rmw(sys, self.base1, Nmos::LSR)
     }
 
     // SRE $nnnn
-    fn op_4F<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_4f<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_abs(sys)?;
         self.rmw(sys, self.base1, Nmos::LSR)?;
         self.EOR(self.lo_byte);
@@ -733,12 +732,12 @@ impl Nmos {
     }
 
     // NOP*
-    fn op_5A<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_5a<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.implicit(sys)
     }
 
     // SRE $nnnn,Y
-    fn op_5B<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_5b<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_abi(sys, self.y, true)?;
         self.rmw(sys, self.base1, Nmos::LSR)?;
         self.EOR(self.lo_byte);
@@ -746,14 +745,14 @@ impl Nmos {
     }
 
     // NOP* $nnnn,X
-    fn op_5C<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_5c<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_abi(sys, self.x, false)?;
         self.load(sys, self.base1)?;
         Some(())
     }
 
     // EOR $nnnn,X
-    fn op_5D<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_5d<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_abi(sys, self.x, false)?;
         let val = self.load(sys, self.base1)?;
         self.EOR(val);
@@ -761,13 +760,13 @@ impl Nmos {
     }
 
     // LSR $nnnn,X
-    fn op_5E<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_5e<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_abi(sys, self.x, true)?;
         self.rmw(sys, self.base1, Nmos::LSR)
     }
 
     // SRE $nnnn,X
-    fn op_5F<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_5f<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_abi(sys, self.x, true)?;
         self.rmw(sys, self.base1, Nmos::LSR)?;
         self.EOR(self.lo_byte);
@@ -858,21 +857,21 @@ impl Nmos {
     }
 
     // ROR A
-    fn op_6A<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_6a<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.implicit(sys)?;
         self.a = self.ROR(self.a);
         Some(())
     }
 
     // ARR #nn
-    fn op_6B<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_6b<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         let val = self.immediate(sys)?;
         self.ARR(val);
         Some(())
     }
 
     // JMP ($nnnn)
-    fn op_6C<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_6c<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_abs(sys)?;
         self.lo_byte = self.read(sys, self.base1)?;
         // The vector does not cross a page.
@@ -882,7 +881,7 @@ impl Nmos {
     }
 
     // ADC $nnnn
-    fn op_6D<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_6d<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_abs(sys)?;
         let val = self.load(sys, self.base1)?;
         self.ADC(val);
@@ -890,13 +889,13 @@ impl Nmos {
     }
 
     // ROR $nnnn
-    fn op_6E<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_6e<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_abs(sys)?;
         self.rmw(sys, self.base1, Nmos::ROR)
     }
 
     // RRA $nnnn
-    fn op_6F<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_6f<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_abs(sys)?;
         self.rmw(sys, self.base1, Nmos::ROR)?;
         self.ADC(self.lo_byte);
@@ -974,12 +973,12 @@ impl Nmos {
     }
 
     // NOP*
-    fn op_7A<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_7a<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.implicit(sys)
     }
 
     // RRA $nnnn,Y
-    fn op_7B<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_7b<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_abi(sys, self.y, true)?;
         self.rmw(sys, self.base1, Nmos::ROR)?;
         self.ADC(self.lo_byte);
@@ -987,14 +986,14 @@ impl Nmos {
     }
 
     // NOP* $nnnn,X
-    fn op_7C<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_7c<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_abi(sys, self.x, false)?;
         self.load(sys, self.base1)?;
         Some(())
     }
 
     // ADC $nnnn,X
-    fn op_7D<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_7d<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_abi(sys, self.x, false)?;
         let val = self.load(sys, self.base1)?;
         self.ADC(val);
@@ -1002,13 +1001,13 @@ impl Nmos {
     }
 
     // ROR $nnnn,X
-    fn op_7E<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_7e<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_abi(sys, self.x, true)?;
         self.rmw(sys, self.base1, Nmos::ROR)
     }
 
     // RRA $nnnn,X
-    fn op_7F<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_7f<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_abi(sys, self.x, true)?;
         self.rmw(sys, self.base1, Nmos::ROR)?;
         self.ADC(self.lo_byte);
@@ -1078,7 +1077,7 @@ impl Nmos {
     }
 
     // TXA
-    fn op_8A<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_8a<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.implicit(sys)?;
         self.a = self.x;
         self.flags.nz(self.a);
@@ -1086,7 +1085,7 @@ impl Nmos {
     }
 
     // XAA #nn
-    fn op_8B<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_8b<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         // Unstable: A = (A | magic) & X & #nn
         // This implementation uses magic = 0xff.
         let val = self.immediate(sys)?;
@@ -1096,25 +1095,25 @@ impl Nmos {
     }
 
     // STY $nnnn
-    fn op_8C<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_8c<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_abs(sys)?;
         self.store(sys, self.base1, self.y)
     }
 
     // STA $nnnn
-    fn op_8D<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_8d<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_abs(sys)?;
         self.store(sys, self.base1, self.a)
     }
 
     // STX $nnnn
-    fn op_8E<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_8e<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_abs(sys)?;
         self.store(sys, self.base1, self.x)
     }
 
     // SAX $nnnn
-    fn op_8F<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_8f<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_abs(sys)?;
         self.store(sys, self.base1, self.a & self.x)
     }
@@ -1190,14 +1189,14 @@ impl Nmos {
     }
 
     // TXS
-    fn op_9A<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_9a<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.implicit(sys)?;
         self.sp = self.x;
         Some(())
     }
 
     // TAS $nnnn,Y
-    fn op_9B<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_9b<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_abs(sys)?;
         self.sp = self.a & self.x;
         // TODO: match and check if sys.rdy to remove &{H+1}
@@ -1213,7 +1212,7 @@ impl Nmos {
     }
 
     // SHY $nnnn,X
-    fn op_9C<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_9c<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_abs(sys)?;
         // TODO: match and check if sys.rdy
         self.read(sys, self.base1.no_carry(self.x))?;
@@ -1228,13 +1227,13 @@ impl Nmos {
     }
 
     // STA $nnnn,X
-    fn op_9D<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_9d<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_abi(sys, self.x, true)?;
         self.store(sys, self.base1, self.a)
     }
 
     // SHX $nnnn,Y
-    fn op_9E<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_9e<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_abs(sys)?;
         // TODO: match and check if sys.rdy to remove &{H+1}
         self.read(sys, self.base1.no_carry(self.y))?;
@@ -1249,7 +1248,7 @@ impl Nmos {
     }
 
     // AHX $nnnn,Y
-    fn op_9F<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_9f<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_abs(sys)?;
         // TODO: match and check if sys.rdy to remove &{H+1}
         self.read(sys, self.base1.no_carry(self.y))?;
@@ -1264,14 +1263,14 @@ impl Nmos {
     }
 
     // LDY #nn
-    fn op_A0<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_a0<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.y = self.immediate(sys)?;
         self.flags.nz(self.y);
         Some(())
     }
 
     // LDA ($nn,X)
-    fn op_A1<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_a1<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_izx(sys)?;
         self.a = self.load(sys, self.base1)?;
         self.flags.nz(self.a);
@@ -1279,14 +1278,14 @@ impl Nmos {
     }
 
     // LDX #nn
-    fn op_A2<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_a2<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.x = self.immediate(sys)?;
         self.flags.nz(self.x);
         Some(())
     }
 
     // LAX ($nn,X)
-    fn op_A3<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_a3<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_izx(sys)?;
         self.x = self.load(sys, self.base1)?;
         self.a = self.x;
@@ -1295,7 +1294,7 @@ impl Nmos {
     }
 
     // LDY $nn
-    fn op_A4<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_a4<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_zp(sys)?;
         self.y = self.load(sys, self.base1)?;
         self.flags.nz(self.y);
@@ -1303,7 +1302,7 @@ impl Nmos {
     }
 
     // LDA $nn
-    fn op_A5<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_a5<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_zp(sys)?;
         self.a = self.load(sys, self.base1)?;
         self.flags.nz(self.a);
@@ -1311,7 +1310,7 @@ impl Nmos {
     }
 
     // LDX $nn
-    fn op_A6<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_a6<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_zp(sys)?;
         self.x = self.load(sys, self.base1)?;
         self.flags.nz(self.x);
@@ -1319,7 +1318,7 @@ impl Nmos {
     }
 
     // LAX $nn
-    fn op_A7<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_a7<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_zp(sys)?;
         self.x = self.load(sys, self.base1)?;
         self.a = self.x;
@@ -1328,7 +1327,7 @@ impl Nmos {
     }
 
     // TAY
-    fn op_A8<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_a8<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.implicit(sys)?;
         self.y = self.a;
         self.flags.nz(self.y);
@@ -1336,14 +1335,14 @@ impl Nmos {
     }
 
     // LDA #nn
-    fn op_A9<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_a9<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.a = self.immediate(sys)?;
         self.flags.nz(self.a);
         Some(())
     }
 
     // TAX
-    fn op_AA<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_aa<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.implicit(sys)?;
         self.x = self.a;
         self.flags.nz(self.x);
@@ -1351,7 +1350,7 @@ impl Nmos {
     }
 
     // LAX #nn
-    fn op_AB<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_ab<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         // Unstable: A = X = (A | magic) & #nn
         // This implementation uses magic = 0.
         let val = self.immediate(sys)? & self.a;
@@ -1362,7 +1361,7 @@ impl Nmos {
     }
 
     // LDY $nnnn
-    fn op_AC<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_ac<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_abs(sys)?;
         self.y = self.load(sys, self.base1)?;
         self.flags.nz(self.y);
@@ -1370,7 +1369,7 @@ impl Nmos {
     }
 
     // LDA $nnnn
-    fn op_AD<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_ad<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_abs(sys)?;
         self.a = self.load(sys, self.base1)?;
         self.flags.nz(self.a);
@@ -1378,7 +1377,7 @@ impl Nmos {
     }
 
     // LDX $nnnn
-    fn op_AE<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_ae<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_abs(sys)?;
         self.x = self.load(sys, self.base1)?;
         self.flags.nz(self.x);
@@ -1386,7 +1385,7 @@ impl Nmos {
     }
 
     // LAX $nnnn
-    fn op_AF<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_af<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_abs(sys)?;
         self.x = self.load(sys, self.base1)?;
         self.a = self.x;
@@ -1395,12 +1394,12 @@ impl Nmos {
     }
 
     // BCS
-    fn op_B0<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_b0<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.branch(sys, self.flags.c())
     }
 
     // LDA ($nn),Y
-    fn op_B1<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_b1<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_izy(sys, false)?;
         self.a = self.load(sys, self.base1)?;
         self.flags.nz(self.a);
@@ -1408,12 +1407,12 @@ impl Nmos {
     }
 
     // KIL
-    fn op_B2<S: Sys>(&mut self, _sys: &mut S) -> Option<()> {
+    fn op_b2<S: Sys>(&mut self, _sys: &mut S) -> Option<()> {
         self.halt()
     }
 
     // LAX ($nn),Y
-    fn op_B3<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_b3<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_izy(sys, false)?;
         self.x = self.load(sys, self.base1)?;
         self.a = self.x;
@@ -1422,7 +1421,7 @@ impl Nmos {
     }
 
     // LDY $nn,X
-    fn op_B4<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_b4<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_zpi(sys, self.x)?;
         self.y = self.load(sys, self.base1)?;
         self.flags.nz(self.y);
@@ -1430,7 +1429,7 @@ impl Nmos {
     }
 
     // LDA $nn,X
-    fn op_B5<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_b5<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_zpi(sys, self.x)?;
         self.a = self.load(sys, self.base1)?;
         self.flags.nz(self.a);
@@ -1438,7 +1437,7 @@ impl Nmos {
     }
 
     // LDX $nn,Y
-    fn op_B6<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_b6<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_zpi(sys, self.y)?;
         self.x = self.load(sys, self.base1)?;
         self.flags.nz(self.x);
@@ -1446,7 +1445,7 @@ impl Nmos {
     }
 
     // LAX $nn,Y
-    fn op_B7<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_b7<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_zpi(sys, self.y)?;
         self.x = self.load(sys, self.base1)?;
         self.a = self.x;
@@ -1455,14 +1454,14 @@ impl Nmos {
     }
 
     // CLV
-    fn op_B8<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_b8<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.implicit(sys)?;
         self.flags.set_v(false);
         Some(())
     }
 
     // LDA $nnnn,Y
-    fn op_B9<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_b9<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_abi(sys, self.y, false)?;
         self.a = self.load(sys, self.base1)?;
         self.flags.nz(self.a);
@@ -1470,7 +1469,7 @@ impl Nmos {
     }
 
     // TSX
-    fn op_BA<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_ba<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.implicit(sys)?;
         self.x = self.sp;
         self.flags.nz(self.x);
@@ -1478,7 +1477,7 @@ impl Nmos {
     }
 
     // LAS $nnnn,Y
-    fn op_BB<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_bb<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_abi(sys, self.y, false)?;
         let val = self.load(sys, self.base1)?;
         self.sp &= val;
@@ -1488,7 +1487,7 @@ impl Nmos {
     }
 
     // LDY $nnnn,X
-    fn op_BC<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_bc<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_abi(sys, self.x, false)?;
         self.y = self.load(sys, self.base1)?;
         self.flags.nz(self.y);
@@ -1496,7 +1495,7 @@ impl Nmos {
     }
 
     // LDA $nnnn,X
-    fn op_BD<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_bd<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_abi(sys, self.x, false)?;
         self.a = self.load(sys, self.base1)?;
         self.flags.nz(self.a);
@@ -1504,7 +1503,7 @@ impl Nmos {
     }
 
     // LDX $nnnn,Y
-    fn op_BE<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_be<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_abi(sys, self.y, false)?;
         self.x = self.load(sys, self.base1)?;
         self.flags.nz(self.x);
@@ -1512,7 +1511,7 @@ impl Nmos {
     }
 
     // LAX $nnnn,Y
-    fn op_BF<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_bf<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_abi(sys, self.y, false)?;
         self.x = self.load(sys, self.base1)?;
         self.a = self.x;
@@ -1521,14 +1520,14 @@ impl Nmos {
     }
 
     // CPY #nn
-    fn op_C0<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_c0<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         let val = self.immediate(sys)?;
         self.CMP(self.y, val);
         Some(())
     }
 
     // CMP ($nn,X)
-    fn op_C1<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_c1<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_izx(sys)?;
         let val = self.load(sys, self.base1)?;
         self.CMP(self.a, val);
@@ -1536,13 +1535,13 @@ impl Nmos {
     }
 
     // NOP* #nn
-    fn op_C2<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_c2<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.immediate(sys)?;
         Some(())
     }
 
     // DCP ($nn,X)
-    fn op_C3<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_c3<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_izx(sys)?;
         self.rmw(sys, self.base1, Nmos::DEC)?;
         self.CMP(self.a, self.lo_byte);
@@ -1550,7 +1549,7 @@ impl Nmos {
     }
 
     // CPY $nn
-    fn op_C4<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_c4<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_zp(sys)?;
         let val = self.load(sys, self.base1)?;
         self.CMP(self.y, val);
@@ -1558,7 +1557,7 @@ impl Nmos {
     }
 
     // CMP $nn
-    fn op_C5<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_c5<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_zp(sys)?;
         let val = self.load(sys, self.base1)?;
         self.CMP(self.a, val);
@@ -1566,13 +1565,13 @@ impl Nmos {
     }
 
     // DEC $nn
-    fn op_C6<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_c6<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_zp(sys)?;
         self.rmw(sys, self.base1, Nmos::DEC)
     }
 
     // DCP $nn
-    fn op_C7<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_c7<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_zp(sys)?;
         self.rmw(sys, self.base1, Nmos::DEC)?;
         self.CMP(self.a, self.lo_byte);
@@ -1580,7 +1579,7 @@ impl Nmos {
     }
 
     // INY
-    fn op_C8<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_c8<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.implicit(sys)?;
         self.y += 1;
         self.flags.nz(self.y);
@@ -1588,14 +1587,14 @@ impl Nmos {
     }
 
     // CMP #nn
-    fn op_C9<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_c9<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         let val = self.immediate(sys)?;
         self.CMP(self.a, val);
         Some(())
     }
 
     // DEX
-    fn op_CA<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_ca<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.implicit(sys)?;
         self.x -= 1;
         self.flags.nz(self.x);
@@ -1603,7 +1602,7 @@ impl Nmos {
     }
 
     // ASX #nn
-    fn op_CB<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_cb<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         let val = self.immediate(sys)?;
         self.x &= self.a;
         self.flags.set_c(self.x >= val);
@@ -1613,7 +1612,7 @@ impl Nmos {
     }
 
     // CPY $nnnn
-    fn op_CC<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_cc<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_abs(sys)?;
         let val = self.load(sys, self.base1)?;
         self.CMP(self.y, val);
@@ -1621,7 +1620,7 @@ impl Nmos {
     }
 
     // CMP $nnnn
-    fn op_CD<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_cd<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_abs(sys)?;
         let val = self.load(sys, self.base1)?;
         self.CMP(self.a, val);
@@ -1629,13 +1628,13 @@ impl Nmos {
     }
 
     // DEC $nnnn
-    fn op_CE<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_ce<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_abs(sys)?;
         self.rmw(sys, self.base1, Nmos::DEC)
     }
 
     // DCP $nnnn
-    fn op_CF<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_cf<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_abs(sys)?;
         self.rmw(sys, self.base1, Nmos::DEC)?;
         self.CMP(self.a, self.lo_byte);
@@ -1643,12 +1642,12 @@ impl Nmos {
     }
 
     // BNE
-    fn op_D0<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_d0<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.branch(sys, !self.flags.z())
     }
 
     // CMP ($nn),Y
-    fn op_D1<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_d1<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_izy(sys, false)?;
         let val = self.load(sys, self.base1)?;
         self.CMP(self.a, val);
@@ -1656,12 +1655,12 @@ impl Nmos {
     }
 
     // KIL
-    fn op_D2<S: Sys>(&mut self, _sys: &mut S) -> Option<()> {
+    fn op_d2<S: Sys>(&mut self, _sys: &mut S) -> Option<()> {
         self.halt()
     }
 
     // DCP ($nn),Y
-    fn op_D3<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_d3<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_izy(sys, true)?;
         self.rmw(sys, self.base1, Nmos::DEC)?;
         self.CMP(self.a, self.lo_byte);
@@ -1669,14 +1668,14 @@ impl Nmos {
     }
 
     // NOP* $nn,X
-    fn op_D4<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_d4<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_zpi(sys, self.x)?;
         self.load(sys, self.base1)?;
         Some(())
     }
 
     // CMP $nn,X
-    fn op_D5<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_d5<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_zpi(sys, self.x)?;
         let val = self.load(sys, self.base1)?;
         self.CMP(self.a, val);
@@ -1684,13 +1683,13 @@ impl Nmos {
     }
 
     // DEC $nn,X
-    fn op_D6<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_d6<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_zpi(sys, self.x)?;
         self.rmw(sys, self.base1, Nmos::DEC)
     }
 
     // DCP $nn,X
-    fn op_D7<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_d7<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_zpi(sys, self.x)?;
         self.rmw(sys, self.base1, Nmos::DEC)?;
         self.CMP(self.a, self.lo_byte);
@@ -1698,14 +1697,14 @@ impl Nmos {
     }
 
     // CLD
-    fn op_D8<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_d8<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.implicit(sys)?;
         self.flags.d = false;
         Some(())
     }
 
     // CMP $nnnn,Y
-    fn op_D9<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_d9<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_abi(sys, self.y, false)?;
         let val = self.load(sys, self.base1)?;
         self.CMP(self.a, val);
@@ -1713,12 +1712,12 @@ impl Nmos {
     }
 
     // NOP*
-    fn op_DA<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_da<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.implicit(sys)
     }
 
     // DCP $nnnn,Y
-    fn op_DB<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_db<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_abi(sys, self.y, true)?;
         self.rmw(sys, self.base1, Nmos::DEC)?;
         self.CMP(self.a, self.lo_byte);
@@ -1726,14 +1725,14 @@ impl Nmos {
     }
 
     // NOP* $nnnn,X
-    fn op_DC<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_dc<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_abi(sys, self.x, false)?;
         self.load(sys, self.base1)?;
         Some(())
     }
 
     // CMP $nnnn,X
-    fn op_DD<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_dd<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_abi(sys, self.x, false)?;
         let val = self.load(sys, self.base1)?;
         self.CMP(self.a, val);
@@ -1741,13 +1740,13 @@ impl Nmos {
     }
 
     // DEC $nnnn,X
-    fn op_DE<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_de<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_abi(sys, self.x, true)?;
         self.rmw(sys, self.base1, Nmos::DEC)
     }
 
     // DCP $nnnn,X
-    fn op_DF<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_df<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_abi(sys, self.x, true)?;
         self.rmw(sys, self.base1, Nmos::DEC)?;
         self.CMP(self.a, self.lo_byte);
@@ -1755,14 +1754,14 @@ impl Nmos {
     }
 
     // CPX #nn
-    fn op_E0<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_e0<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         let val = self.immediate(sys)?;
         self.CMP(self.x, val);
         Some(())
     }
 
     // SBC ($nn,X)
-    fn op_E1<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_e1<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_izx(sys)?;
         let val = self.load(sys, self.base1)?;
         self.SBC(val);
@@ -1770,13 +1769,13 @@ impl Nmos {
     }
 
     // NOP* #nn
-    fn op_E2<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_e2<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.immediate(sys)?;
         Some(())
     }
 
     // ISC ($nn,X)
-    fn op_E3<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_e3<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_izx(sys)?;
         self.rmw(sys, self.base1, Nmos::INC)?;
         self.SBC(self.lo_byte);
@@ -1784,7 +1783,7 @@ impl Nmos {
     }
 
     // CPX $nn
-    fn op_E4<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_e4<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_zp(sys)?;
         let val = self.load(sys, self.base1)?;
         self.CMP(self.x, val);
@@ -1792,7 +1791,7 @@ impl Nmos {
     }
 
     // SBC $nn
-    fn op_E5<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_e5<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_zp(sys)?;
         let val = self.load(sys, self.base1)?;
         self.SBC(val);
@@ -1800,13 +1799,13 @@ impl Nmos {
     }
 
     // INC $nn
-    fn op_E6<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_e6<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_zp(sys)?;
         self.rmw(sys, self.base1, Nmos::INC)
     }
 
     // ISC $nn
-    fn op_E7<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_e7<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_zp(sys)?;
         self.rmw(sys, self.base1, Nmos::INC)?;
         self.SBC(self.lo_byte);
@@ -1814,7 +1813,7 @@ impl Nmos {
     }
 
     // INX
-    fn op_E8<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_e8<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.implicit(sys)?;
         self.x += 1;
         self.flags.nz(self.x);
@@ -1822,26 +1821,26 @@ impl Nmos {
     }
 
     // SBC #nn
-    fn op_E9<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_e9<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         let val = self.immediate(sys)?;
         self.SBC(val);
         Some(())
     }
 
     // NOP
-    fn op_EA<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_ea<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.implicit(sys)
     }
 
     // SBC #imm
-    fn op_EB<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_eb<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         let val = self.immediate(sys)?;
         self.SBC(val);
         Some(())
     }
 
     // CPX $nnnn
-    fn op_EC<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_ec<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_abs(sys)?;
         let val = self.load(sys, self.base1)?;
         self.CMP(self.x, val);
@@ -1849,7 +1848,7 @@ impl Nmos {
     }
 
     // SBC $nnnn
-    fn op_ED<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_ed<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_abs(sys)?;
         let val = self.load(sys, self.base1)?;
         self.SBC(val);
@@ -1857,13 +1856,13 @@ impl Nmos {
     }
 
     // INC $nnnn
-    fn op_EE<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_ee<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_abs(sys)?;
         self.rmw(sys, self.base1, Nmos::INC)
     }
 
     // ISC $nnnn
-    fn op_EF<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_ef<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_abs(sys)?;
         self.rmw(sys, self.base1, Nmos::INC)?;
         self.SBC(self.lo_byte);
@@ -1871,12 +1870,12 @@ impl Nmos {
     }
 
     // BEQ
-    fn op_F0<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_f0<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.branch(sys, self.flags.z())
     }
 
     // SBC ($nn),Y
-    fn op_F1<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_f1<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_izy(sys, false)?;
         let val = self.load(sys, self.base1)?;
         self.SBC(val);
@@ -1884,12 +1883,12 @@ impl Nmos {
     }
 
     // KIL
-    fn op_F2<S: Sys>(&mut self, _sys: &mut S) -> Option<()> {
+    fn op_f2<S: Sys>(&mut self, _sys: &mut S) -> Option<()> {
         self.halt()
     }
 
     // ISC ($nn),Y
-    fn op_F3<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_f3<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_izy(sys, true)?;
         self.rmw(sys, self.base1, Nmos::INC)?;
         self.SBC(self.lo_byte);
@@ -1897,14 +1896,14 @@ impl Nmos {
     }
 
     // NOP* $nn,X
-    fn op_F4<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_f4<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_zpi(sys, self.x)?;
         self.load(sys, self.base1)?;
         Some(())
     }
 
     // SBC $nn,X
-    fn op_F5<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_f5<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_zpi(sys, self.x)?;
         let val = self.load(sys, self.base1)?;
         self.SBC(val);
@@ -1912,13 +1911,13 @@ impl Nmos {
     }
 
     // INC $nn,X
-    fn op_F6<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_f6<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_zpi(sys, self.x)?;
         self.rmw(sys, self.base1, Nmos::INC)
     }
 
     // ISC $nn,X
-    fn op_F7<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_f7<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_zpi(sys, self.x)?;
         self.rmw(sys, self.base1, Nmos::INC)?;
         self.SBC(self.lo_byte);
@@ -1926,14 +1925,14 @@ impl Nmos {
     }
 
     // SED
-    fn op_F8<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_f8<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.implicit(sys)?;
         self.flags.d = true;
         Some(())
     }
 
     // SBC $nnnn,Y
-    fn op_F9<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_f9<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_abi(sys, self.y, false)?;
         let val = self.load(sys, self.base1)?;
         self.SBC(val);
@@ -1941,12 +1940,12 @@ impl Nmos {
     }
 
     // NOP*
-    fn op_FA<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_fa<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.implicit(sys)
     }
 
     // ISC $nnnn,Y
-    fn op_FB<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_fb<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_abi(sys, self.y, true)?;
         self.rmw(sys, self.base1, Nmos::INC)?;
         self.SBC(self.lo_byte);
@@ -1954,14 +1953,14 @@ impl Nmos {
     }
 
     // NOP* $nnnn,X
-    fn op_FC<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_fc<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_abi(sys, self.x, false)?;
         self.load(sys, self.base1)?;
         Some(())
     }
 
     // SBC $nnnn,X
-    fn op_FD<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_fd<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_abi(sys, self.x, false)?;
         let val = self.load(sys, self.base1)?;
         self.SBC(val);
@@ -1969,13 +1968,13 @@ impl Nmos {
     }
 
     // INC $nnnn,X
-    fn op_FE<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_fe<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_abi(sys, self.x, true)?;
         self.rmw(sys, self.base1, Nmos::INC)
     }
 
     // ISC $nnnn,X
-    fn op_FF<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
+    fn op_ff<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         self.base1 = self.addr_abi(sys, self.x, true)?;
         self.rmw(sys, self.base1, Nmos::INC)?;
         self.SBC(self.lo_byte);
@@ -2000,12 +1999,12 @@ impl Nmos {
             0x07 => self.op_07(sys)?,
             0x08 => self.op_08(sys)?,
             0x09 => self.op_09(sys)?,
-            0x0a => self.op_0A(sys)?,
-            0x0b => self.op_0B(sys)?,
-            0x0c => self.op_0C(sys)?,
-            0x0d => self.op_0D(sys)?,
-            0x0e => self.op_0E(sys)?,
-            0x0f => self.op_0F(sys)?,
+            0x0a => self.op_0a(sys)?,
+            0x0b => self.op_0b(sys)?,
+            0x0c => self.op_0c(sys)?,
+            0x0d => self.op_0d(sys)?,
+            0x0e => self.op_0e(sys)?,
+            0x0f => self.op_0f(sys)?,
             0x10 => self.op_10(sys)?,
             0x11 => self.op_11(sys)?,
             0x12 => self.op_12(sys)?,
@@ -2016,12 +2015,12 @@ impl Nmos {
             0x17 => self.op_17(sys)?,
             0x18 => self.op_18(sys)?,
             0x19 => self.op_19(sys)?,
-            0x1a => self.op_1A(sys)?,
-            0x1b => self.op_1B(sys)?,
-            0x1c => self.op_1C(sys)?,
-            0x1d => self.op_1D(sys)?,
-            0x1e => self.op_1E(sys)?,
-            0x1f => self.op_1F(sys)?,
+            0x1a => self.op_1a(sys)?,
+            0x1b => self.op_1b(sys)?,
+            0x1c => self.op_1c(sys)?,
+            0x1d => self.op_1d(sys)?,
+            0x1e => self.op_1e(sys)?,
+            0x1f => self.op_1f(sys)?,
             0x20 => self.op_20(sys)?,
             0x21 => self.op_21(sys)?,
             0x22 => self.op_22(sys)?,
@@ -2032,12 +2031,12 @@ impl Nmos {
             0x27 => self.op_27(sys)?,
             0x28 => self.op_28(sys)?,
             0x29 => self.op_29(sys)?,
-            0x2a => self.op_2A(sys)?,
-            0x2b => self.op_2B(sys)?,
-            0x2c => self.op_2C(sys)?,
-            0x2d => self.op_2D(sys)?,
-            0x2e => self.op_2E(sys)?,
-            0x2f => self.op_2F(sys)?,
+            0x2a => self.op_2a(sys)?,
+            0x2b => self.op_2b(sys)?,
+            0x2c => self.op_2c(sys)?,
+            0x2d => self.op_2d(sys)?,
+            0x2e => self.op_2e(sys)?,
+            0x2f => self.op_2f(sys)?,
             0x30 => self.op_30(sys)?,
             0x31 => self.op_31(sys)?,
             0x32 => self.op_32(sys)?,
@@ -2048,12 +2047,12 @@ impl Nmos {
             0x37 => self.op_37(sys)?,
             0x38 => self.op_38(sys)?,
             0x39 => self.op_39(sys)?,
-            0x3a => self.op_3A(sys)?,
-            0x3b => self.op_3B(sys)?,
-            0x3c => self.op_3C(sys)?,
-            0x3d => self.op_3D(sys)?,
-            0x3e => self.op_3E(sys)?,
-            0x3f => self.op_3F(sys)?,
+            0x3a => self.op_3a(sys)?,
+            0x3b => self.op_3b(sys)?,
+            0x3c => self.op_3c(sys)?,
+            0x3d => self.op_3d(sys)?,
+            0x3e => self.op_3e(sys)?,
+            0x3f => self.op_3f(sys)?,
             0x40 => self.op_40(sys)?,
             0x41 => self.op_41(sys)?,
             0x42 => self.op_42(sys)?,
@@ -2064,12 +2063,12 @@ impl Nmos {
             0x47 => self.op_47(sys)?,
             0x48 => self.op_48(sys)?,
             0x49 => self.op_49(sys)?,
-            0x4a => self.op_4A(sys)?,
-            0x4b => self.op_4B(sys)?,
-            0x4c => self.op_4C(sys)?,
-            0x4d => self.op_4D(sys)?,
-            0x4e => self.op_4E(sys)?,
-            0x4f => self.op_4F(sys)?,
+            0x4a => self.op_4a(sys)?,
+            0x4b => self.op_4b(sys)?,
+            0x4c => self.op_4c(sys)?,
+            0x4d => self.op_4d(sys)?,
+            0x4e => self.op_4e(sys)?,
+            0x4f => self.op_4f(sys)?,
             0x50 => self.op_50(sys)?,
             0x51 => self.op_51(sys)?,
             0x52 => self.op_52(sys)?,
@@ -2080,12 +2079,12 @@ impl Nmos {
             0x57 => self.op_57(sys)?,
             0x58 => self.op_58(sys)?,
             0x59 => self.op_59(sys)?,
-            0x5a => self.op_5A(sys)?,
-            0x5b => self.op_5B(sys)?,
-            0x5c => self.op_5C(sys)?,
-            0x5d => self.op_5D(sys)?,
-            0x5e => self.op_5E(sys)?,
-            0x5f => self.op_5F(sys)?,
+            0x5a => self.op_5a(sys)?,
+            0x5b => self.op_5b(sys)?,
+            0x5c => self.op_5c(sys)?,
+            0x5d => self.op_5d(sys)?,
+            0x5e => self.op_5e(sys)?,
+            0x5f => self.op_5f(sys)?,
             0x60 => self.op_60(sys)?,
             0x61 => self.op_61(sys)?,
             0x62 => self.op_62(sys)?,
@@ -2096,12 +2095,12 @@ impl Nmos {
             0x67 => self.op_67(sys)?,
             0x68 => self.op_68(sys)?,
             0x69 => self.op_69(sys)?,
-            0x6a => self.op_6A(sys)?,
-            0x6b => self.op_6B(sys)?,
-            0x6c => self.op_6C(sys)?,
-            0x6d => self.op_6D(sys)?,
-            0x6e => self.op_6E(sys)?,
-            0x6f => self.op_6F(sys)?,
+            0x6a => self.op_6a(sys)?,
+            0x6b => self.op_6b(sys)?,
+            0x6c => self.op_6c(sys)?,
+            0x6d => self.op_6d(sys)?,
+            0x6e => self.op_6e(sys)?,
+            0x6f => self.op_6f(sys)?,
             0x70 => self.op_70(sys)?,
             0x71 => self.op_71(sys)?,
             0x72 => self.op_72(sys)?,
@@ -2112,12 +2111,12 @@ impl Nmos {
             0x77 => self.op_77(sys)?,
             0x78 => self.op_78(sys)?,
             0x79 => self.op_79(sys)?,
-            0x7a => self.op_7A(sys)?,
-            0x7b => self.op_7B(sys)?,
-            0x7c => self.op_7C(sys)?,
-            0x7d => self.op_7D(sys)?,
-            0x7e => self.op_7E(sys)?,
-            0x7f => self.op_7F(sys)?,
+            0x7a => self.op_7a(sys)?,
+            0x7b => self.op_7b(sys)?,
+            0x7c => self.op_7c(sys)?,
+            0x7d => self.op_7d(sys)?,
+            0x7e => self.op_7e(sys)?,
+            0x7f => self.op_7f(sys)?,
             0x80 => self.op_80(sys)?,
             0x81 => self.op_81(sys)?,
             0x82 => self.op_82(sys)?,
@@ -2128,12 +2127,12 @@ impl Nmos {
             0x87 => self.op_87(sys)?,
             0x88 => self.op_88(sys)?,
             0x89 => self.op_89(sys)?,
-            0x8a => self.op_8A(sys)?,
-            0x8b => self.op_8B(sys)?,
-            0x8c => self.op_8C(sys)?,
-            0x8d => self.op_8D(sys)?,
-            0x8e => self.op_8E(sys)?,
-            0x8f => self.op_8F(sys)?,
+            0x8a => self.op_8a(sys)?,
+            0x8b => self.op_8b(sys)?,
+            0x8c => self.op_8c(sys)?,
+            0x8d => self.op_8d(sys)?,
+            0x8e => self.op_8e(sys)?,
+            0x8f => self.op_8f(sys)?,
             0x90 => self.op_90(sys)?,
             0x91 => self.op_91(sys)?,
             0x92 => self.op_92(sys)?,
@@ -2144,108 +2143,108 @@ impl Nmos {
             0x97 => self.op_97(sys)?,
             0x98 => self.op_98(sys)?,
             0x99 => self.op_99(sys)?,
-            0x9a => self.op_9A(sys)?,
-            0x9b => self.op_9B(sys)?,
-            0x9c => self.op_9C(sys)?,
-            0x9d => self.op_9D(sys)?,
-            0x9e => self.op_9E(sys)?,
-            0x9f => self.op_9F(sys)?,
-            0xa0 => self.op_A0(sys)?,
-            0xa1 => self.op_A1(sys)?,
-            0xa2 => self.op_A2(sys)?,
-            0xa3 => self.op_A3(sys)?,
-            0xa4 => self.op_A4(sys)?,
-            0xa5 => self.op_A5(sys)?,
-            0xa6 => self.op_A6(sys)?,
-            0xa7 => self.op_A7(sys)?,
-            0xa8 => self.op_A8(sys)?,
-            0xa9 => self.op_A9(sys)?,
-            0xaa => self.op_AA(sys)?,
-            0xab => self.op_AB(sys)?,
-            0xac => self.op_AC(sys)?,
-            0xad => self.op_AD(sys)?,
-            0xae => self.op_AE(sys)?,
-            0xaf => self.op_AF(sys)?,
-            0xb0 => self.op_B0(sys)?,
-            0xb1 => self.op_B1(sys)?,
-            0xb2 => self.op_B2(sys)?,
-            0xb3 => self.op_B3(sys)?,
-            0xb4 => self.op_B4(sys)?,
-            0xb5 => self.op_B5(sys)?,
-            0xb6 => self.op_B6(sys)?,
-            0xb7 => self.op_B7(sys)?,
-            0xb8 => self.op_B8(sys)?,
-            0xb9 => self.op_B9(sys)?,
-            0xba => self.op_BA(sys)?,
-            0xbb => self.op_BB(sys)?,
-            0xbc => self.op_BC(sys)?,
-            0xbd => self.op_BD(sys)?,
-            0xbe => self.op_BE(sys)?,
-            0xbf => self.op_BF(sys)?,
-            0xc0 => self.op_C0(sys)?,
-            0xc1 => self.op_C1(sys)?,
-            0xc2 => self.op_C2(sys)?,
-            0xc3 => self.op_C3(sys)?,
-            0xc4 => self.op_C4(sys)?,
-            0xc5 => self.op_C5(sys)?,
-            0xc6 => self.op_C6(sys)?,
-            0xc7 => self.op_C7(sys)?,
-            0xc8 => self.op_C8(sys)?,
-            0xc9 => self.op_C9(sys)?,
-            0xca => self.op_CA(sys)?,
-            0xcb => self.op_CB(sys)?,
-            0xcc => self.op_CC(sys)?,
-            0xcd => self.op_CD(sys)?,
-            0xce => self.op_CE(sys)?,
-            0xcf => self.op_CF(sys)?,
-            0xd0 => self.op_D0(sys)?,
-            0xd1 => self.op_D1(sys)?,
-            0xd2 => self.op_D2(sys)?,
-            0xd3 => self.op_D3(sys)?,
-            0xd4 => self.op_D4(sys)?,
-            0xd5 => self.op_D5(sys)?,
-            0xd6 => self.op_D6(sys)?,
-            0xd7 => self.op_D7(sys)?,
-            0xd8 => self.op_D8(sys)?,
-            0xd9 => self.op_D9(sys)?,
-            0xda => self.op_DA(sys)?,
-            0xdb => self.op_DB(sys)?,
-            0xdc => self.op_DC(sys)?,
-            0xdd => self.op_DD(sys)?,
-            0xde => self.op_DE(sys)?,
-            0xdf => self.op_DF(sys)?,
-            0xe0 => self.op_E0(sys)?,
-            0xe1 => self.op_E1(sys)?,
-            0xe2 => self.op_E2(sys)?,
-            0xe3 => self.op_E3(sys)?,
-            0xe4 => self.op_E4(sys)?,
-            0xe5 => self.op_E5(sys)?,
-            0xe6 => self.op_E6(sys)?,
-            0xe7 => self.op_E7(sys)?,
-            0xe8 => self.op_E8(sys)?,
-            0xe9 => self.op_E9(sys)?,
-            0xea => self.op_EA(sys)?,
-            0xeb => self.op_EB(sys)?,
-            0xec => self.op_EC(sys)?,
-            0xed => self.op_ED(sys)?,
-            0xee => self.op_EE(sys)?,
-            0xef => self.op_EF(sys)?,
-            0xf0 => self.op_F0(sys)?,
-            0xf1 => self.op_F1(sys)?,
-            0xf2 => self.op_F2(sys)?,
-            0xf3 => self.op_F3(sys)?,
-            0xf4 => self.op_F4(sys)?,
-            0xf5 => self.op_F5(sys)?,
-            0xf6 => self.op_F6(sys)?,
-            0xf7 => self.op_F7(sys)?,
-            0xf8 => self.op_F8(sys)?,
-            0xf9 => self.op_F9(sys)?,
-            0xfa => self.op_FA(sys)?,
-            0xfb => self.op_FB(sys)?,
-            0xfc => self.op_FC(sys)?,
-            0xfd => self.op_FD(sys)?,
-            0xfe => self.op_FE(sys)?,
-            0xff => self.op_FF(sys)?,
+            0x9a => self.op_9a(sys)?,
+            0x9b => self.op_9b(sys)?,
+            0x9c => self.op_9c(sys)?,
+            0x9d => self.op_9d(sys)?,
+            0x9e => self.op_9e(sys)?,
+            0x9f => self.op_9f(sys)?,
+            0xa0 => self.op_a0(sys)?,
+            0xa1 => self.op_a1(sys)?,
+            0xa2 => self.op_a2(sys)?,
+            0xa3 => self.op_a3(sys)?,
+            0xa4 => self.op_a4(sys)?,
+            0xa5 => self.op_a5(sys)?,
+            0xa6 => self.op_a6(sys)?,
+            0xa7 => self.op_a7(sys)?,
+            0xa8 => self.op_a8(sys)?,
+            0xa9 => self.op_a9(sys)?,
+            0xaa => self.op_aa(sys)?,
+            0xab => self.op_ab(sys)?,
+            0xac => self.op_ac(sys)?,
+            0xad => self.op_ad(sys)?,
+            0xae => self.op_ae(sys)?,
+            0xaf => self.op_af(sys)?,
+            0xb0 => self.op_b0(sys)?,
+            0xb1 => self.op_b1(sys)?,
+            0xb2 => self.op_b2(sys)?,
+            0xb3 => self.op_b3(sys)?,
+            0xb4 => self.op_b4(sys)?,
+            0xb5 => self.op_b5(sys)?,
+            0xb6 => self.op_b6(sys)?,
+            0xb7 => self.op_b7(sys)?,
+            0xb8 => self.op_b8(sys)?,
+            0xb9 => self.op_b9(sys)?,
+            0xba => self.op_ba(sys)?,
+            0xbb => self.op_bb(sys)?,
+            0xbc => self.op_bc(sys)?,
+            0xbd => self.op_bd(sys)?,
+            0xbe => self.op_be(sys)?,
+            0xbf => self.op_bf(sys)?,
+            0xc0 => self.op_c0(sys)?,
+            0xc1 => self.op_c1(sys)?,
+            0xc2 => self.op_c2(sys)?,
+            0xc3 => self.op_c3(sys)?,
+            0xc4 => self.op_c4(sys)?,
+            0xc5 => self.op_c5(sys)?,
+            0xc6 => self.op_c6(sys)?,
+            0xc7 => self.op_c7(sys)?,
+            0xc8 => self.op_c8(sys)?,
+            0xc9 => self.op_c9(sys)?,
+            0xca => self.op_ca(sys)?,
+            0xcb => self.op_cb(sys)?,
+            0xcc => self.op_cc(sys)?,
+            0xcd => self.op_cd(sys)?,
+            0xce => self.op_ce(sys)?,
+            0xcf => self.op_cf(sys)?,
+            0xd0 => self.op_d0(sys)?,
+            0xd1 => self.op_d1(sys)?,
+            0xd2 => self.op_d2(sys)?,
+            0xd3 => self.op_d3(sys)?,
+            0xd4 => self.op_d4(sys)?,
+            0xd5 => self.op_d5(sys)?,
+            0xd6 => self.op_d6(sys)?,
+            0xd7 => self.op_d7(sys)?,
+            0xd8 => self.op_d8(sys)?,
+            0xd9 => self.op_d9(sys)?,
+            0xda => self.op_da(sys)?,
+            0xdb => self.op_db(sys)?,
+            0xdc => self.op_dc(sys)?,
+            0xdd => self.op_dd(sys)?,
+            0xde => self.op_de(sys)?,
+            0xdf => self.op_df(sys)?,
+            0xe0 => self.op_e0(sys)?,
+            0xe1 => self.op_e1(sys)?,
+            0xe2 => self.op_e2(sys)?,
+            0xe3 => self.op_e3(sys)?,
+            0xe4 => self.op_e4(sys)?,
+            0xe5 => self.op_e5(sys)?,
+            0xe6 => self.op_e6(sys)?,
+            0xe7 => self.op_e7(sys)?,
+            0xe8 => self.op_e8(sys)?,
+            0xe9 => self.op_e9(sys)?,
+            0xea => self.op_ea(sys)?,
+            0xeb => self.op_eb(sys)?,
+            0xec => self.op_ec(sys)?,
+            0xed => self.op_ed(sys)?,
+            0xee => self.op_ee(sys)?,
+            0xef => self.op_ef(sys)?,
+            0xf0 => self.op_f0(sys)?,
+            0xf1 => self.op_f1(sys)?,
+            0xf2 => self.op_f2(sys)?,
+            0xf3 => self.op_f3(sys)?,
+            0xf4 => self.op_f4(sys)?,
+            0xf5 => self.op_f5(sys)?,
+            0xf6 => self.op_f6(sys)?,
+            0xf7 => self.op_f7(sys)?,
+            0xf8 => self.op_f8(sys)?,
+            0xf9 => self.op_f9(sys)?,
+            0xfa => self.op_fa(sys)?,
+            0xfb => self.op_fb(sys)?,
+            0xfc => self.op_fc(sys)?,
+            0xfd => self.op_fd(sys)?,
+            0xfe => self.op_fe(sys)?,
+            0xff => self.op_ff(sys)?,
             _ => unreachable!(),
         }
         Some(())

@@ -75,7 +75,7 @@ pub trait Cpu: Clone + fmt::Debug {
     fn flag(&self, f: Status) -> bool;
     fn set_flag(&mut self, f: Status, set: bool);
     fn run_instruction<S: Sys>(&mut self, sys: &mut S) -> Option<()>;
-    fn partial_inst(&self) -> bool;
+    fn instruction_cycle(&self) -> u32;
     fn halted(&self) -> bool;
 }
 

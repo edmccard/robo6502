@@ -104,7 +104,7 @@ impl<T: Sys> TestSys for StepFullSys<T> {
     #[inline]
     fn run_instruction<C: Cpu>(&mut self, cpu: &mut C) {
         cpu.run_instruction(self);
-        if cpu.partial_inst() {
+        if cpu.instruction_cycle() != 0 {
             cpu.run_instruction(self);
         }
     }

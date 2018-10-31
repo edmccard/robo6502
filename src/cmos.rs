@@ -16,7 +16,7 @@ mod ops;
 #[derive(Clone, Default)]
 pub struct Cmos {
     flags: Flags,
-    op_step: MachineInt<u32>,
+    op_cycle: MachineInt<u32>,
     pc: Addr,
     base1: Addr,
     op: u8,
@@ -26,8 +26,8 @@ pub struct Cmos {
     x: Byte,
     y: Byte,
     sp: Byte,
-    latch: bool,
-    nmi_edge: bool,
+    do_int: bool,
+    nmi: bool,
     reset: bool,
     test_nmi: bool,
     test_irq: bool,
@@ -44,10 +44,10 @@ impl Cmos {
 impl Cpu for Cmos {
     #[inline]
     fn run_instruction<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
-        if self.op_step == 0 {
+        if self.op_cycle == 0 {
             sys.set_sync(true);
             self.check_prev_signals(sys);
-            if self.latch {
+            if self.do_int {
                 self.read(sys, self.pc)?;
                 self.op = 0x00;
             } else {
@@ -56,9 +56,9 @@ impl Cpu for Cmos {
             sys.set_sync(false);
             self.exec(sys)?;
         } else {
-            self.step_exec(sys)?;
+            self.cycle_exec(sys)?;
         }
-        self.op_step = MachineInt(0);
+        self.op_cycle = MachineInt(0);
         Some(())
     }
 
@@ -66,13 +66,13 @@ impl Cpu for Cmos {
         false
     }
 
-    fn partial_inst(&self) -> bool {
-        self.op_step != 0
+    fn instruction_cycle(&self) -> u32 {
+        self.op_cycle.0
     }
 
     fn reset(&mut self) {
         self.reset = true;
-        self.latch = true;
+        self.do_int = true;
     }
 
     #[inline]
@@ -377,7 +377,7 @@ impl Cmos {
             // On no-px write, read from final address
             self.read(sys, self.base1 + reg)?;
         } else {
-            self.op_step += 1;
+            self.op_cycle += 1;
         }
         self.pc += 1;
         Some(self.base1 + reg)
@@ -410,7 +410,7 @@ impl Cmos {
             // Read from vector hi addr instead of no-carry vector + y
             self.read(sys, self.base1)?;
         } else {
-            self.op_step += 1;
+            self.op_cycle += 1;
         }
         Some(self.addr() + self.y)
     }
@@ -494,7 +494,7 @@ impl Cmos {
 
     fn read<S: Sys>(&mut self, sys: &mut S, addr: Addr) -> Option<Byte> {
         let val = sys.read(addr.0)?;
-        self.op_step += 1;
+        self.op_cycle += 1;
         Some(MachineInt(val))
     }
 
@@ -508,7 +508,7 @@ impl Cmos {
         S: Sys,
     {
         sys.write(addr.0, val.0)?;
-        self.op_step += 1;
+        self.op_cycle += 1;
         Some(())
     }
 
@@ -529,66 +529,66 @@ impl Cmos {
     }
 }
 
-// Single-step bus operations.
+// Single-cycle bus operations.
 impl Cmos {
-    fn step_addr_abs<S: Sys>(&mut self, sys: &mut S) -> Option<Addr> {
-        if self.op_step == 1 {
+    fn cycle_addr_abs<S: Sys>(&mut self, sys: &mut S) -> Option<Addr> {
+        if self.op_cycle == 1 {
             self.lo_byte = self.fetch_operand(sys)?;
         }
 
-        // op_step == 2
+        // op_cycle == 2
         self.hi_byte = self.fetch_operand(sys)?;
         Some(self.addr())
-        // op_step == 3
+        // op_cycle == 3
     }
 
-    fn step_fetch_vector_zp<S: Sys>(
+    fn cycle_fetch_vector_zp<S: Sys>(
         &mut self,
         sys: &mut S,
         zp: Addr,
-        start_step: u32,
+        start_cycle: u32,
     ) -> Option<Addr> {
-        let start_step = MachineInt(start_step);
+        let start_cycle = MachineInt(start_cycle);
         // start_state is 3 from izx, 2 from izy
-        if self.op_step == start_step {
+        if self.op_cycle == start_cycle {
             self.lo_byte = self.read(sys, zp)?;
         }
-        // op_step == start_step + 1
+        // op_cycle == start_cycle + 1
         self.hi_byte = self.read(sys, zp.no_carry(1))?;
         Some(self.addr())
-        // op_step == 5(izx), 4(izy)
+        // op_cycle == 5(izx), 4(izy)
     }
 
-    fn step_addr_zpi<S>(&mut self, sys: &mut S, reg: Byte) -> Option<Addr>
+    fn cycle_addr_zpi<S>(&mut self, sys: &mut S, reg: Byte) -> Option<Addr>
     where
         S: Sys,
     {
-        if self.op_step == 1 {
+        if self.op_cycle == 1 {
             self.base1 = Addr::zp(self.read(sys, self.pc)?);
         }
 
         // Read from pc instead of base address
-        // op_step == 2
+        // op_cycle == 2
         self.fetch_operand(sys)?;
         Some(self.base1.no_carry(reg))
-        // op_step == 3
+        // op_cycle == 3
     }
 
-    fn step_addr_abi<S: Sys>(
+    fn cycle_addr_abi<S: Sys>(
         &mut self,
         sys: &mut S,
         reg: Byte,
         write: bool,
     ) -> Option<Addr> {
-        if self.op_step == 1 {
+        if self.op_cycle == 1 {
             self.lo_byte = self.fetch_operand(sys)?;
         }
 
-        if self.op_step == 2 {
+        if self.op_cycle == 2 {
             self.hi_byte = self.read(sys, self.pc)?;
         }
 
-        // op_step == 3
+        // op_cycle == 3
         self.base1 = self.addr();
         if self.base1.check_carry(reg) {
             // On px, read from pc instead of no-carry base + reg
@@ -597,107 +597,107 @@ impl Cmos {
             // On no-px write, read from final address
             self.read(sys, self.base1 + reg)?;
         } else {
-            self.op_step += 1;
+            self.op_cycle += 1;
         }
         self.pc += 1;
         Some(self.base1 + reg)
-        // op_step == 4
+        // op_cycle == 4
     }
 
-    fn step_addr_izx<S: Sys>(&mut self, sys: &mut S) -> Option<Addr> {
-        if self.op_step == 1 {
+    fn cycle_addr_izx<S: Sys>(&mut self, sys: &mut S) -> Option<Addr> {
+        if self.op_cycle == 1 {
             self.base1 = Addr::zp(self.read(sys, self.pc)?);
         }
-        if self.op_step == 2 {
+        if self.op_cycle == 2 {
             // Read from pc instead of base address
             self.fetch_operand(sys)?;
             self.base1 = self.base1.no_carry(self.x);
         }
 
-        // op_step >= 3
-        Some(self.step_fetch_vector_zp(sys, self.base1, 3)?)
-        // op_step == 5
+        // op_cycle >= 3
+        Some(self.cycle_fetch_vector_zp(sys, self.base1, 3)?)
+        // op_cycle == 5
     }
 
-    fn step_addr_izy<S: Sys>(
+    fn cycle_addr_izy<S: Sys>(
         &mut self,
         sys: &mut S,
         write: bool,
     ) -> Option<Addr> {
-        if self.op_step == 1 {
+        if self.op_cycle == 1 {
             self.base1 = self.addr_zp(sys)?;
         }
-        if self.op_step == 2 {
+        if self.op_cycle == 2 {
             self.lo_byte = self.read(sys, self.base1)?;
             self.base1 = self.base1.no_carry(1);
         }
-        if self.op_step == 3 {
+        if self.op_cycle == 3 {
             self.hi_byte = self.read(sys, self.base1)?;
         }
 
-        // op_step == 4
+        // op_cycle == 4
         if write || self.addr().check_carry(self.y) {
             // Read from vector hi addr instead of vector + y
             self.read(sys, self.base1)?;
         } else {
-            self.op_step += 1;
+            self.op_cycle += 1;
         }
         Some(self.addr() + self.y)
-        // op_step == 5
+        // op_cycle == 5
     }
 
-    fn step_addr_izp<S: Sys>(&mut self, sys: &mut S) -> Option<Addr> {
-        if self.op_step == 1 {
+    fn cycle_addr_izp<S: Sys>(&mut self, sys: &mut S) -> Option<Addr> {
+        if self.op_cycle == 1 {
             self.base1 = self.addr_zp(sys)?;
         }
 
-        // op_step >= 2
-        Some(self.step_fetch_vector_zp(sys, self.base1, 2)?)
-        // op_step == 4
+        // op_cycle >= 2
+        Some(self.cycle_fetch_vector_zp(sys, self.base1, 2)?)
+        // op_cycle == 4
     }
 
-    fn step_rmw<F, S: Sys>(
+    fn cycle_rmw<F, S: Sys>(
         &mut self,
         sys: &mut S,
         addr: Addr,
         op: F,
-        start_step: u32,
+        start_cycle: u32,
     ) -> Option<()>
     where
         F: Fn(&mut Self, Byte) -> Byte,
     {
-        let start_step = MachineInt(start_step);
-        if self.op_step == start_step {
+        let start_cycle = MachineInt(start_cycle);
+        if self.op_cycle == start_cycle {
             self.lo_byte = self.read(sys, addr)?;
         }
-        if self.op_step == start_step + 1 {
+        if self.op_cycle == start_cycle + 1 {
             // Read from the address instead of writing
             self.read(sys, addr)?;
             self.lo_byte = op(self, self.lo_byte);
         }
-        // op_step == start_step + 2
+        // op_cycle == start_cycle + 2
         self.store(sys, addr, self.lo_byte)
     }
 
-    fn step_decimal<F, S: Sys>(
+    fn cycle_decimal<F, S: Sys>(
         &mut self,
         sys: &mut S,
         addr: Addr,
         op: F,
-        start_step: u32,
+        start_cycle: u32,
     ) -> Option<()>
     where
         F: Fn(&mut Self, Byte),
     {
-        let start_step = MachineInt(start_step);
-        if self.op_step == start_step {
+        let start_cycle = MachineInt(start_cycle);
+        if self.op_cycle == start_cycle {
             if !self.flags.d {
                 self.poll_signals(sys);
             }
             self.lo_byte = self.read(sys, addr)?;
         }
 
-        // op_step = start_step + 1
+        // op_cycle = start_cycle + 1
         if self.flags.d {
             self.load(sys, self.pc)?;
         }
@@ -705,18 +705,18 @@ impl Cmos {
         Some(())
     }
 
-    fn step_branch<S>(&mut self, sys: &mut S, taken: bool) -> Option<()>
+    fn cycle_branch<S>(&mut self, sys: &mut S, taken: bool) -> Option<()>
     where
         S: Sys,
     {
-        if self.op_step == 1 {
+        if self.op_cycle == 1 {
             self.poll_signals(sys);
             self.lo_byte = self.fetch_operand(sys)?;
         }
 
-        // op_step >= 2
+        // op_cycle >= 2
         if taken {
-            if self.op_step == 2 {
+            if self.op_cycle == 2 {
                 let offset = BranchOffset::as_from(self.lo_byte);
                 if !self.pc.check_carry(offset) {
                     // Poll if this is the final cycle
@@ -724,7 +724,7 @@ impl Cmos {
                 }
                 self.read(sys, self.pc)?;
             }
-            if self.op_step == 3 {
+            if self.op_cycle == 3 {
                 let offset = BranchOffset::as_from(self.lo_byte);
                 if self.pc.check_carry(offset) {
                     self.poll_signals(sys);
@@ -752,10 +752,10 @@ impl fmt::Debug for Cmos {
 impl Cmos {
     fn poll_signals<S: Sys>(&mut self, sys: &mut S) {
         if sys.poll_nmi() {
-            self.nmi_edge = true;
+            self.nmi = true;
         }
         let irq = (!self.flags.i) && sys.irq();
-        self.latch = self.nmi_edge || irq || self.reset;
+        self.do_int = self.nmi || irq || self.reset;
     }
 
     // Record the signals for checking after the next cycle,
@@ -770,22 +770,22 @@ impl Cmos {
     fn poll_prev_signals<S: Sys>(&mut self, sys: &mut S) {
         if self.test_nmi {
             sys.poll_nmi();
-            self.nmi_edge = true;
+            self.nmi = true;
         }
         let irq = (!self.flags.i) && self.test_irq;
-        self.latch = self.nmi_edge || irq || self.reset;
+        self.do_int = self.nmi || irq || self.reset;
     }
 
     fn clear_signals(&mut self) {
         self.reset = false;
-        self.latch = false;
+        self.do_int = false;
     }
 
     fn signal_vector<S: Sys>(&mut self, sys: &mut S) -> Addr {
         if self.reset {
             MachineInt(0xfffc)
-        } else if self.nmi_edge || (self.latch && sys.poll_nmi()) {
-            self.nmi_edge = false;
+        } else if self.nmi || (self.do_int && sys.poll_nmi()) {
+            self.nmi = false;
             MachineInt(0xfffa)
         } else {
             MachineInt(0xfffe)
