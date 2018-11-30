@@ -2,7 +2,7 @@
 edition = "2018"
 name = "robo6502"
 description = "A cycle-accurate 6502 emulator"
-version = "0.3.1"
+version = "0.3.2"
 authors = ["Ed McCardell <edmccard@hotmail.com>"]
 homepage = "https://github.com/edmccard/robo6502"
 repository = "https://github.com/edmccard/robo6502"

@@ -14,6 +14,7 @@ use machine_int::MachineInt;
 
 use self::mi::Byte;
 
+pub use crate::mi::Addr;
 pub use crate::cmos::Cmos;
 pub use crate::nmos::Nmos;
 

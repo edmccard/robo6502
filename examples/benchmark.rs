@@ -26,18 +26,34 @@ fn main() {
 }
 
 fn run_program<C: Cpu>(mem: Vec<u8>, mut cpu: C) -> f64 {
-    let mut sys = VecSys { mem };
+    fn main_loop<C: Cpu, S: Sys>(sys: &mut S, cpu: &mut C) -> Option<()> {
+        loop {
+            cpu.run_instruction(sys)?;
+            if cpu.pc() == 0x3469 {
+                break;
+            }
+        }
+        Some(())
+    }
 
+    let mut sys = VecSys { mem };
     cpu.set_pc(0x0400);
 
     let now = Instant::now();
     loop {
-        cpu.run_instruction(&mut sys);
-        if cpu.pc() == 0x3469 {
-            break;
+        match main_loop(&mut sys, &mut cpu) {
+            Some(()) => break,
+            None => {
+                if cpu.halted() {
+                    panic!("Unexpected KIL instruction");
+                } else {
+                    panic!("Unexpected interruption");
+                }
+            }
         }
     }
     let now = now.elapsed();
+
     let cycles = if cpu.is_nmos() {
         96241364.0
     } else {

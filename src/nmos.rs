@@ -475,6 +475,9 @@ impl Nmos {
 
     fn halt(&mut self) -> Option<()> {
         self.halted = true;
+        self.do_int = self.reset;
+        self.pc -= 1;
+        self.op_cycle = MachineInt(0);
         None
     }
 
