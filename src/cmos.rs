@@ -34,6 +34,7 @@ pub struct Cmos {
 }
 
 impl Cmos {
+    #[allow(clippy::new_ret_no_self)]
     pub fn new() -> impl Cpu {
         Cmos {
             ..Default::default()
@@ -385,7 +386,7 @@ impl Cmos {
 
     fn addr_izp<S: Sys>(&mut self, sys: &mut S) -> Option<Addr> {
         self.base1 = self.addr_zp(sys)?;
-        Some(self.fetch_vector_zp(sys, self.base1)?)
+        self.fetch_vector_zp(sys, self.base1)
     }
 
     fn addr_izx<S: Sys>(&mut self, sys: &mut S) -> Option<Addr> {
@@ -393,7 +394,7 @@ impl Cmos {
         // Read from pc instead of base address
         self.fetch_operand(sys)?;
         self.base1 = self.base1.no_carry(self.x);
-        Some(self.fetch_vector_zp(sys, self.base1)?)
+        self.fetch_vector_zp(sys, self.base1)
     }
 
     fn addr_izy<S>(&mut self, sys: &mut S, write: bool) -> Option<Addr>
@@ -615,7 +616,7 @@ impl Cmos {
         }
 
         // op_cycle >= 3
-        Some(self.cycle_fetch_vector_zp(sys, self.base1, 3)?)
+        self.cycle_fetch_vector_zp(sys, self.base1, 3)
         // op_cycle == 5
     }
 
@@ -652,7 +653,7 @@ impl Cmos {
         }
 
         // op_cycle >= 2
-        Some(self.cycle_fetch_vector_zp(sys, self.base1, 2)?)
+        self.cycle_fetch_vector_zp(sys, self.base1, 2)
         // op_cycle == 4
     }
 

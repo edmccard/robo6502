@@ -18,7 +18,7 @@ impl AddrMath<u16> for MachineInt<u16> {
     }
 }
 
-#[cfg_attr(feature = "cargo-clippy", allow(clippy::cast_lossless))]
+#[allow(clippy::cast_lossless)]
 impl AddrMath<MachineInt<u8>> for MachineInt<u16> {
     #[inline]
     fn check_carry(self, offset: MachineInt<u8>) -> bool {

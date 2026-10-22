@@ -1,5 +1,3 @@
-#![feature(duration_as_u128)]
-
 use std::io::Read;
 use std::iter;
 use std::time::{Duration, Instant};
@@ -17,11 +15,11 @@ fn main() {
 
     let nmos = iter::repeat_with(|| run_program(mem.clone(), Nmos::standard()))
         .take(3)
-        .fold(0.0/0.0, f64::max);
+        .fold(0.0 / 0.0, f64::max);
     println!("NMOS MHz: {}", nmos);
     let cmos = iter::repeat_with(|| run_program(mem.clone(), Cmos::new()))
         .take(3)
-        .fold(0.0/0.0, f64::max);
+        .fold(0.0 / 0.0, f64::max);
     println!("CMOS MHz: {}", cmos);
 }
 

@@ -406,7 +406,7 @@ impl Nmos {
         self.base1 = self.addr_zp(sys)?;
         self.read(sys, self.base1)?;
         self.base1 = self.base1.no_carry(self.x);
-        Some(self.fetch_vector_zp(sys, self.base1)?)
+        self.fetch_vector_zp(sys, self.base1)
     }
 
     fn addr_izy<S: Sys>(&mut self, sys: &mut S, write: bool) -> Option<Addr> {
@@ -575,7 +575,7 @@ impl Nmos {
         }
 
         // op_cycle >= 3
-        Some(self.cycle_fetch_vector_zp(sys, self.base1, 3)?)
+        self.cycle_fetch_vector_zp(sys, self.base1, 3)
         // op_cycle == 5
     }
 

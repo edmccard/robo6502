@@ -6,16 +6,14 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-#![cfg_attr(feature = "cargo-clippy", feature(tool_lints))]
-
 use std::fmt;
 
 use machine_int::MachineInt;
 
 use self::mi::Byte;
 
-pub use crate::mi::Addr;
 pub use crate::cmos::Cmos;
+pub use crate::mi::Addr;
 pub use crate::nmos::Nmos;
 
 mod cmos;
@@ -179,10 +177,7 @@ impl Flags {
             | self.c
     }
 
-    #[cfg_attr(
-        feature = "cargo-clippy",
-        allow(clippy::wrong_self_convention)
-    )]
+    #[allow(clippy::wrong_self_convention)]
     fn from_byte(&mut self, val: Byte) {
         self.n = val;
         self.v = val & 0x40;
@@ -194,10 +189,7 @@ impl Flags {
 }
 
 impl fmt::Debug for Flags {
-    #[cfg_attr(
-        feature = "cargo-clippy",
-        allow(clippy::many_single_char_names)
-    )]
+    #[allow(clippy::many_single_char_names)]
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let n = if self.n() { "N" } else { "n" };
         let v = match self.v.0 {

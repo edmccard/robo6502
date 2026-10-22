@@ -1943,10 +1943,7 @@ impl Cmos {
 }
 
 impl Cmos {
-    #[cfg_attr(
-        feature = "cargo-clippy",
-        allow(clippy::cyclomatic_complexity)
-    )]
+    #[allow(clippy::cognitive_complexity)]
     pub(crate) fn cycle_exec<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         match self.op {
             0x00 => self.cycle_op_00(sys)?,
@@ -2205,7 +2202,6 @@ impl Cmos {
             0xfd => self.cycle_op_fd(sys)?,
             0xfe => self.cycle_op_fe(sys)?,
             0xff => self.op_ff(sys)?,
-            _ => unreachable!(),
         }
         Some(())
     }

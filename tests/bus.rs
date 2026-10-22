@@ -193,7 +193,8 @@ fn test_decimal_mode<C: Cpu>(mut cpu: C, op: u8, pass: &mut [bool]) {
                 end_pc: base.end_pc,
                 bus: [base.bus.clone(), final_cycles].concat(),
             }
-        }).collect();
+        })
+        .collect();
 
     cpu.set_flag(Status::D, true);
     for test in tests {
@@ -269,7 +270,8 @@ fn op_bus(op: u8, is_nmos: bool) -> Option<Vec<AddrTest>> {
                 end_pc: base.end_pc,
                 bus: [base.bus.clone(), final_cycles].concat(),
             }
-        }).collect();
+        })
+        .collect();
     Some(tests)
 }
 

@@ -50,18 +50,14 @@ impl Nmos {
         self.sp -= 1;
 
         // TODO: say why needed
-        if !self.nmi
-            && sys.peek_nmi()
-            && sys.nmi_length() < NmiLength::Plenty
-        {
+        if !self.nmi && sys.peek_nmi() && sys.nmi_length() < NmiLength::Plenty {
             sys.poll_nmi();
         }
 
         self.lo_byte = self.read(sys, self.base1)?;
 
         // TODO: say why needed
-        if !self.nmi && sys.peek_nmi() && sys.nmi_length() < NmiLength::Two
-        {
+        if !self.nmi && sys.peek_nmi() && sys.nmi_length() < NmiLength::Two {
             sys.poll_nmi();
         }
 
@@ -1983,10 +1979,7 @@ impl Nmos {
 }
 
 impl Nmos {
-    #[cfg_attr(
-        feature = "cargo-clippy",
-        allow(clippy::cyclomatic_complexity)
-    )]
+    #[allow(clippy::cognitive_complexity)]
     pub(crate) fn exec<S: Sys>(&mut self, sys: &mut S) -> Option<()> {
         match self.op {
             0x00 => self.op_00(sys)?,
@@ -2245,7 +2238,6 @@ impl Nmos {
             0xfd => self.op_fd(sys)?,
             0xfe => self.op_fe(sys)?,
             0xff => self.op_ff(sys)?,
-            _ => unreachable!(),
         }
         Some(())
     }
