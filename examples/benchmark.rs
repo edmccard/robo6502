@@ -34,7 +34,7 @@ fn run_program<C: Cpu>(mem: Vec<u8>, mut cpu: C) -> f64 {
         Some(())
     }
 
-    let mut sys = VecSys { mem };
+    let mut sys = StepSys::new(VecSys { mem });
     cpu.set_pc(0x0400);
 
     let now = Instant::now();
@@ -44,8 +44,6 @@ fn run_program<C: Cpu>(mem: Vec<u8>, mut cpu: C) -> f64 {
             None => {
                 if cpu.halted() {
                     panic!("Unexpected KIL instruction");
-                } else {
-                    panic!("Unexpected interruption");
                 }
             }
         }
@@ -78,5 +76,77 @@ impl Sys for VecSys {
     fn write(&mut self, addr: u16, val: u8) -> Option<()> {
         self.mem[addr as usize] = val;
         Some(())
+    }
+}
+
+pub struct StepSys<T: Sys> {
+    pub sys: T,
+    do_stop: bool,
+    sync: bool,
+}
+
+impl<T: Sys> StepSys<T> {
+    pub fn new(sys: T) -> StepSys<T> {
+        StepSys {
+            sys,
+            do_stop: false,
+            sync: false,
+        }
+    }
+}
+
+pub trait MemSys: Sys {
+    fn mem(&self) -> &[u8];
+}
+
+impl<T: MemSys> MemSys for StepSys<T> {
+    fn mem(&self) -> &[u8] {
+        self.sys.mem()
+    }
+}
+
+impl<T: Sys> Sys for StepSys<T> {
+    #[inline]
+    fn read(&mut self, addr: u16) -> Option<u8> {
+        self.do_stop = !self.do_stop;
+        if !self.do_stop {
+            return None;
+        }
+        self.sys.read(addr)
+    }
+
+    #[inline]
+    fn write(&mut self, addr: u16, val: u8) -> Option<()> {
+        self.do_stop = !self.do_stop;
+        if !self.do_stop {
+            return None;
+        }
+        self.sys.write(addr, val)
+    }
+
+    #[inline]
+    fn set_sync(&mut self, set: bool) {
+        self.sync = set;
+        self.sys.set_sync(set);
+    }
+
+    #[inline]
+    fn irq(&self) -> bool {
+        self.sys.irq()
+    }
+
+    #[inline]
+    fn poll_nmi(&mut self) -> bool {
+        self.sys.poll_nmi()
+    }
+
+    #[inline]
+    fn peek_nmi(&self) -> bool {
+        self.sys.peek_nmi()
+    }
+
+    #[inline]
+    fn nmi_length(&self) -> robo6502::NmiLength {
+        self.sys.nmi_length()
     }
 }
